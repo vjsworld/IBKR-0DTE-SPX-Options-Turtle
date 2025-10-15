@@ -501,7 +501,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Create notebook for tabs
         self.notebook = ttk.Notebook(main_container)
-        self.notebook.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        self.notebook.pack(fill=BOTH, expand=YES, padx=5, pady=(5, 0))
         
         # Tab 1: Trading Dashboard
         self.create_trading_tab()
@@ -509,8 +509,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Tab 2: Settings
         self.create_settings_tab()
         
-        # Status bar at bottom
-        self.create_status_bar()
+        # Status bar at bottom (inside main_container so it's part of scrollable area)
+        self.create_status_bar(main_container)
         
         # Start GUI update loop
         self.root.after(100, self.process_gui_queue)
@@ -1028,10 +1028,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         canvas.pack(side=LEFT, fill=BOTH, expand=YES)
         scrollbar.pack(side=RIGHT, fill=Y)
     
-    def create_status_bar(self):
-        """Create status bar at bottom of window"""
-        status_frame = ttk.Frame(self.root, relief=tk.SUNKEN)
-        status_frame.pack(side=BOTTOM, fill=X)
+    def create_status_bar(self, parent):
+        """Create status bar at bottom of window (now inside scrollable container)"""
+        status_frame = ttk.Frame(parent, relief=tk.SUNKEN)
+        status_frame.pack(side=BOTTOM, fill=X, padx=5, pady=5)
         
         # Connection status
         self.status_label = ttk.Label(status_frame, text="Status: Disconnected",
