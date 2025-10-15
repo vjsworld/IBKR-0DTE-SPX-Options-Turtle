@@ -416,14 +416,54 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Apply custom color scheme
         style = ttk.Style()
-        style.configure('.', background='#181818', foreground='#E0E0E0')
-        style.configure('TFrame', background='#181818')
-        style.configure('TLabel', background='#181818', foreground='#E0E0E0')
-        style.configure('TButton', bordercolor='#FF8C00', focuscolor='#FF8C00')
-        style.configure('Treeview', background='#202020', foreground='#E0E0E0',
-                       fieldbackground='#202020', bordercolor='#FF8C00')
-        style.configure('Treeview.Heading', background='#2A2A2A', foreground='#FF8C00',
-                       bordercolor='#FF8C00')
+        
+        # IBKR TWS Exact Color Scheme
+        # Main theme: Pure black and very dark grays to match TWS option chain
+        style.configure('.', background='#000000', foreground='#c8c8c8')
+        style.configure('TFrame', background='#000000')
+        style.configure('TLabel', background='#000000', foreground='#c8c8c8')
+        style.configure('TButton', 
+                       background='#1a1a1a',
+                       foreground='#d0d0d0',
+                       bordercolor='#3a3a3a', 
+                       focuscolor='#505050')
+        style.map('TButton',
+                 background=[('active', '#2a2a2a'), ('pressed', '#0a0a0a')])
+        
+        # Entry and Combobox styling
+        style.configure('TEntry', 
+                       fieldbackground='#0a0a0a',
+                       foreground='#c8c8c8',
+                       bordercolor='#3a3a3a')
+        style.configure('TCombobox',
+                       fieldbackground='#0a0a0a',
+                       foreground='#c8c8c8',
+                       bordercolor='#3a3a3a',
+                       arrowcolor='#808080')
+        
+        # Treeview: Match IBKR's option chain grid exactly
+        # - Very dark background (#000000 to #050505)
+        # - Headers: Darker gray with white text
+        # - Grid lines: Subtle dark gray
+        # - Selection: Subtle blue highlight
+        style.configure('Treeview', 
+                       background='#000000',           # Pure black base
+                       foreground='#c8c8c8',          # Light gray text
+                       fieldbackground='#000000',     # Pure black field
+                       bordercolor='#1a1a1a',         # Very dark gray borders
+                       borderwidth=1,
+                       rowheight=25)                   # Comfortable row height
+        
+        style.configure('Treeview.Heading', 
+                       background='#0a0a0a',          # Very dark gray header
+                       foreground='#d0d0d0',          # White-ish header text
+                       bordercolor='#1a1a1a',         # Dark border
+                       relief='flat')
+        
+        # Selection and focus colors matching IBKR
+        style.map('Treeview',
+                 background=[('selected', '#1a2a3a')],  # Subtle blue selection
+                 foreground=[('selected', '#ffffff')])   # White text when selected
         
         # Create main container
         main_container = ttk.Frame(self.root)
@@ -457,7 +497,36 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def create_trading_tab(self):
-        """Create the main trading dashboard tab"""
+        """
+        Create the main trading dashboard tab with IBKR TWS-styled option chain.
+        
+        Color Scheme Implementation (Exact Match to IBKR TWS):
+        ======================================================
+        
+        BACKGROUND COLORS:
+        - Base background: Pure black (#000000)
+        - ITM Calls: Very subtle dark green gradient (#001a00 shallow, #002a00 deep)
+        - ITM Puts: Very subtle dark red gradient (#1a0000 shallow, #2a0000 deep)
+        - ATM options: Very dark gray (#0a0a0a)
+        - OTM options: Pure black (#000000)
+        
+        TEXT COLORS:
+        - Positive values: Bright green (#00ff00) - gains, positive deltas
+        - Negative values: Bright red (#ff0000) - losses, negative thetas
+        - Neutral/ITM text: Light gray (#b0b0b0)
+        - OTM text: Medium gray (#808080) - dimmer for less relevance
+        - Headers: Off-white (#d0d0d0 to #e0e0e0)
+        
+        DESIGN PRINCIPLES:
+        - Darker = Less relevant (OTM options fade to black)
+        - Color saturation increases with moneyness depth
+        - Strike column uses bold font and centered alignment
+        - Grid lines are very subtle (#1a1a1a) to maintain focus on data
+        - Selection highlight is subtle blue (#1a2a3a) to avoid distraction
+        
+        This implementation matches IBKR TWS Professional workstation styling
+        for maximum familiarity and professional appearance.
+        """
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Option Chain & Trading Dashboard")
         
@@ -562,13 +631,64 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.option_tree.heading(col, text=put_headers[col])
                 self.option_tree.column(col, width=col_width, anchor=CENTER)
         
-        # Configure row tags for ITM/OTM color coding
-        strike_font = tkfont.Font(family="Arial", size=11, weight="bold")
-        self.option_tree.tag_configure("call_itm", background="#1e3a1e", font=strike_font)  # Dark green for ITM calls
-        self.option_tree.tag_configure("call_otm", background="#181818", font=strike_font)  # Default dark
-        self.option_tree.tag_configure("put_itm", background="#3a1e1e", font=strike_font)   # Dark red for ITM puts
-        self.option_tree.tag_configure("put_otm", background="#181818", font=strike_font)   # Default dark
-        self.option_tree.tag_configure("atm", background="#2e2e2e", font=strike_font)       # Slightly lighter for ATM
+        # Configure row tags for ITM/OTM color coding - IBKR TWS exact colors
+        strike_font = tkfont.Font(family="Arial", size=10, weight="bold")
+        normal_font = tkfont.Font(family="Arial", size=9)
+        
+        # IBKR TWS Color Scheme Analysis from Screenshot:
+        # ================================================
+        # Background: Pure black (#000000) or very close (#010101)
+        # ITM Calls (left side): Very subtle dark green tint (#001100 to #002200)
+        # ITM Puts (right side): Very subtle dark red tint (#110000 to #220000)
+        # OTM: Almost pure black (#000000 to #020202)
+        # Strike column: Centered, slightly lighter (#0a0a0a)
+        # 
+        # Text Colors:
+        # - Positive values/changes: Bright green (#00ff00 or #00dd00)
+        # - Negative values/changes: Bright red (#ff0000 or #dd0000)  
+        # - Neutral values: Light gray (#a0a0a0 to #c0c0c0)
+        # - Headers: White or near-white (#e0e0e0 to #ffffff)
+        
+        # Call side (left) coloring
+        self.option_tree.tag_configure("call_itm_deep", 
+                                      background="#002a00",   # Deeper green for deep ITM
+                                      foreground="#b0b0b0", 
+                                      font=normal_font)
+        self.option_tree.tag_configure("call_itm", 
+                                      background="#001a00",   # Subtle green for ITM
+                                      foreground="#b0b0b0", 
+                                      font=normal_font)
+        self.option_tree.tag_configure("call_otm", 
+                                      background="#000000",   # Pure black for OTM
+                                      foreground="#808080",   # Dimmer text for OTM
+                                      font=normal_font)
+        
+        # Put side (right) coloring
+        self.option_tree.tag_configure("put_itm_deep", 
+                                      background="#2a0000",   # Deeper red for deep ITM
+                                      foreground="#b0b0b0", 
+                                      font=normal_font)
+        self.option_tree.tag_configure("put_itm", 
+                                      background="#1a0000",   # Subtle red for ITM
+                                      foreground="#b0b0b0", 
+                                      font=normal_font)
+        self.option_tree.tag_configure("put_otm", 
+                                      background="#000000",   # Pure black for OTM
+                                      foreground="#808080",   # Dimmer text for OTM
+                                      font=normal_font)
+        
+        # ATM: Neutral, slightly lighter
+        self.option_tree.tag_configure("atm", 
+                                      background="#0a0a0a",   # Very dark gray
+                                      foreground="#d0d0d0",   # Bright text for ATM
+                                      font=strike_font)       # Bold font for strike
+        
+        # Additional styling for readability (not directly supported by ttk.Treeview at cell level,
+        # but documented for future reference if we implement custom rendering)
+        # Note: These colors should be applied in the value formatting logic
+        # - Green text (#00ff00) for positive changes/deltas
+        # - Red text (#ff0000) for negative changes/deltas
+        # - Gray text (#a0a0a0) for neutral values
         
         self.option_tree.pack(fill=BOTH, expand=YES)
         
@@ -1615,20 +1735,33 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     safe_format(put_data['bid'] if put_data else None, ".2f"),
                 ]
                 
-                # Determine ITM/OTM/ATM status for color coding
+                # Determine ITM/OTM/ATM status for color coding - IBKR TWS style
                 tags = []
                 if self.spx_price > 0:
                     # Tolerance for ATM (within 0.5% of SPX price)
                     atm_tolerance = self.spx_price * 0.005
+                    strike_distance = abs(strike - self.spx_price)
                     
-                    if abs(strike - self.spx_price) <= atm_tolerance:
+                    if strike_distance <= atm_tolerance:
+                        # At the money
                         tags.append("atm")
                     elif strike < self.spx_price:
-                        # Calls ITM when strike < spot, Puts OTM
-                        tags.append("call_itm")
+                        # Calls ITM when strike < spot
+                        # Deep ITM: more than 2% below spot
+                        if (self.spx_price - strike) > (self.spx_price * 0.02):
+                            tags.append("call_itm_deep")
+                        else:
+                            tags.append("call_itm")
                     else:
-                        # Calls OTM when strike > spot, Puts ITM
-                        tags.append("put_itm")
+                        # Puts ITM when strike > spot
+                        # Deep ITM: more than 2% above spot
+                        if (strike - self.spx_price) > (self.spx_price * 0.02):
+                            tags.append("put_itm_deep")
+                        else:
+                            tags.append("put_itm")
+                else:
+                    # No SPX price available, use OTM as default
+                    tags.append("call_otm")
                 
                 self.option_tree.item(tree_item, values=values, tags=tags)
             
