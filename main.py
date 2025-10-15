@@ -108,7 +108,16 @@ class IBKRWrapper(EWrapper):
                                          underlyingConId: int, tradingClass: str,
                                          multiplier: str, expirations: set,
                                          strikes: set):
-        """Receives option chain parameters"""
+        """
+        Receives option chain parameters from IBKR.
+        This callback may be called multiple times for different exchanges.
+        """
+        self.app.log_message(
+            f"Received option parameters - Exchange: {exchange}, Trading Class: {tradingClass}, "
+            f"Expirations: {len(expirations)}, Strikes: {len(strikes)}", 
+            "INFO"
+        )
+        
         self.app.option_chain_data[reqId] = {
             'exchange': exchange,
             'tradingClass': tradingClass,
@@ -118,13 +127,35 @@ class IBKRWrapper(EWrapper):
         }
     
     def securityDefinitionOptionParameterEnd(self, reqId: int):
-        """Called when option parameter request is complete"""
-        self.app.log_message(f"Option chain data received for reqId {reqId}", "INFO")
-        self.app.process_option_chain()
+        """
+        Called when option parameter request is complete.
+        This signals that all option chain data has been received.
+        """
+        if reqId in self.app.option_chain_data:
+            data = self.app.option_chain_data[reqId]
+            self.app.log_message(
+                f"Option chain request complete (reqId: {reqId}) - "
+                f"Processing {len(data['strikes'])} strikes", 
+                "SUCCESS"
+            )
+            self.app.process_option_chain()
+        else:
+            self.app.log_message(
+                f"Option chain request ended but no data received for reqId {reqId}", 
+                "WARNING"
+            )
     
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float,
                   attrib: TickAttrib):
         """Receives real-time price updates"""
+        # Check if this is SPX underlying price
+        if reqId == self.app.spx_req_id:
+            if tickType == 4:  # LAST price
+                self.app.spx_price = price
+                self.app.update_spx_price_display()
+            return
+        
+        # Handle option contract prices
         if reqId in self.app.market_data_map:
             contract_key = self.app.market_data_map[reqId]
             
@@ -284,6 +315,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.order_status = {}
         self.pending_orders = {}  # orderId -> (contract_key, action, quantity)
         
+        # SPX underlying price tracking
+        self.spx_price = 0.0
+        self.spx_req_id = None
+        
         # Option chain
         self.current_expiry = datetime.now().strftime("%Y%m%d")
         self.spx_contracts = []  # List of all 0DTE contracts
@@ -373,7 +408,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         chain_header.pack(fill=X, padx=5, pady=5)
         
         ttk.Label(chain_header, text="SPX 0DTE Option Chain", 
-                 font=("Arial", 14, "bold")).pack(side=LEFT)
+                 font=("Arial", 14, "bold")).pack(side=LEFT, padx=5)
+        
+        # SPX Price display
+        self.spx_price_label = ttk.Label(chain_header, text="SPX: Loading...", 
+                                         font=("Arial", 12, "bold"),
+                                         foreground="#FF8C00")
+        self.spx_price_label.pack(side=LEFT, padx=20)
         
         ttk.Button(chain_header, text="Refresh Chain", 
                   command=self.request_option_chain,
@@ -735,6 +776,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message("Requesting account updates...", "INFO")
         self.reqAccountUpdates(True, "")
         
+        # Subscribe to SPX underlying price
+        self.log_message("Subscribing to SPX underlying price...", "INFO")
+        self.subscribe_spx_price()
+        
         # Request option chain - this will automatically subscribe to market data
         self.log_message("Requesting SPX option chain for 0DTE...", "INFO")
         self.request_option_chain()
@@ -799,6 +844,39 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message(f"Error loading settings: {str(e)}", "ERROR")
     
     # ========================================================================
+    # SPX UNDERLYING PRICE
+    # ========================================================================
+    
+    def subscribe_spx_price(self):
+        """
+        Subscribe to SPX underlying index price.
+        This provides real-time price updates for the SPX index.
+        """
+        if self.connection_state != ConnectionState.CONNECTED:
+            self.log_message("Cannot subscribe to SPX price - not connected", "WARNING")
+            return
+        
+        # Create SPX index contract
+        spx_contract = Contract()
+        spx_contract.symbol = "SPX"
+        spx_contract.secType = "IND"
+        spx_contract.currency = "USD"
+        spx_contract.exchange = "CBOE"
+        
+        # Get unique request ID
+        self.spx_req_id = self.next_req_id
+        self.next_req_id += 1
+        
+        # Request market data for SPX
+        self.reqMktData(self.spx_req_id, spx_contract, "", False, False, [])
+        self.log_message(f"Subscribed to SPX underlying price (reqId: {self.spx_req_id})", "INFO")
+    
+    def update_spx_price_display(self):
+        """Update the SPX price display in the GUI"""
+        if self.spx_price > 0:
+            self.spx_price_label.config(text=f"SPX: ${self.spx_price:.2f}")
+    
+    # ========================================================================
     # OPTION CHAIN MANAGEMENT
     # ========================================================================
     
@@ -827,20 +905,86 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.log_message("Requesting SPX option chain parameters...", "INFO")
         
-        # Create SPX underlying contract for option chain request
-        spx_contract = Contract()
-        spx_contract.symbol = "SPX"
-        spx_contract.secType = "IND"  # Index
-        spx_contract.currency = "USD"
-        spx_contract.exchange = "CBOE"
-        
         # Request option parameters - this returns strikes and expirations
         req_id = self.next_req_id
         self.next_req_id += 1
         
         self.log_message(f"Requesting option parameters for SPX (reqId: {req_id})...", "INFO")
+        
+        # Method 1: Try with just symbol and exchange
         # ConID 416563234 is the SPX index identifier
-        self.reqSecDefOptParams(req_id, "SPX", "", "IND", 416563234)
+        try:
+            self.reqSecDefOptParams(req_id, "SPX", "", "IND", 416563234)
+            self.log_message("Option chain request sent using ConID 416563234", "INFO")
+            self.log_message("Waiting for option chain response (will timeout after 10 seconds)...", "INFO")
+            
+            # Set timeout fallback - if no response in 10 seconds, use manual method
+            if self.root:
+                self.root.after(10000, self._check_option_chain_timeout, req_id)
+                
+        except Exception as e:
+            self.log_message(f"Error requesting option chain: {str(e)}", "ERROR")
+            
+            # Fallback: Try alternative approach
+            self.log_message("Trying alternative option chain request method...", "INFO")
+            # If first method fails, we'll manually create some test contracts
+            self.manual_option_chain_fallback()
+    
+    def _check_option_chain_timeout(self, req_id):
+        """Check if option chain request timed out"""
+        if req_id not in self.option_chain_data:
+            self.log_message(
+                "Option chain request timed out - no response from IBKR after 10 seconds", 
+                "WARNING"
+            )
+            self.log_message("Switching to manual option chain creation...", "INFO")
+            self.manual_option_chain_fallback()
+        else:
+            self.log_message("Option chain data received successfully", "SUCCESS")
+    
+    def manual_option_chain_fallback(self):
+        """
+        Fallback method to manually create option chain based on SPX price.
+        Used when reqSecDefOptParams fails or times out.
+        """
+        self.log_message("Using manual option chain fallback method...", "WARNING")
+        
+        # Wait for SPX price if not available yet
+        if self.spx_price == 0:
+            self.log_message("Waiting for SPX price before creating manual chain...", "INFO")
+            # Retry after 2 seconds
+            if self.root:
+                self.root.after(2000, self.manual_option_chain_fallback)
+            return
+        
+        self.log_message(f"Creating option chain around SPX price: ${self.spx_price:.2f}", "INFO")
+        
+        # Create strikes around current SPX price (every 5 points, ±50 points)
+        center_strike = round(self.spx_price / 5) * 5  # Round to nearest 5
+        strikes = []
+        
+        for offset in range(-50, 55, 5):  # -50 to +50 in 5-point increments
+            strikes.append(center_strike + offset)
+        
+        self.log_message(f"Manually created {len(strikes)} strikes from {min(strikes)} to {max(strikes)}", "INFO")
+        
+        # Create contracts for all strikes
+        self.spx_contracts = []
+        
+        for strike in strikes:
+            call_contract = self.create_spxw_contract(strike, "C")
+            put_contract = self.create_spxw_contract(strike, "P")
+            
+            self.spx_contracts.append(('C', strike, call_contract))
+            self.spx_contracts.append(('P', strike, put_contract))
+        
+        self.log_message(
+            f"Manually created {len(self.spx_contracts)} option contracts", 
+            "SUCCESS"
+        )
+        
+        # Subscribe to market data
+        self.subscribe_market_data()
     
     def process_option_chain(self):
         """
