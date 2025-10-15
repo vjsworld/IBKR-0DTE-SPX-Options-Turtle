@@ -59,28 +59,49 @@ class IBKRWrapper(EWrapper):
         self.app = app
     
     def error(self, reqId: TickerId, errorCode: int, errorString: str):
-        """Handle error messages"""
-        error_msg = f"Error {errorCode}: {errorString}"
-        self.app.log_message(error_msg, "ERROR")
+        """
+        Handle error messages from IBKR API.
         
-        # Connection-related errors
+        Error codes:
+        - 502: Couldn't connect to TWS
+        - 503: TWS socket port is already in use
+        - 504: Not connected
+        - 1100: Connectivity between IB and TWS has been lost
+        - 2110: Connectivity between TWS and server is broken
+        """
+        error_msg = f"Error {errorCode}: {errorString}"
+        
+        # Only log non-trivial errors
+        if errorCode not in [2104, 2106, 2158]:  # Informational messages
+            self.app.log_message(error_msg, "ERROR")
+        
+        # Connection-related errors - trigger reconnection
         if errorCode in [502, 503, 504, 1100, 2110]:
+            self.app.log_message(f"Connection error detected (code {errorCode}). Initiating reconnection...", "WARNING")
             self.app.connection_state = ConnectionState.DISCONNECTED
             self.app.schedule_reconnect()
         
         # Market data errors
         elif errorCode == 354:  # Requested market data is not subscribed
             self.app.log_message(f"Market data not available for reqId {reqId}", "WARNING")
+        
+        # Permission errors
+        elif errorCode == 162:  # Historical market data Service error
+            self.app.log_message(f"Historical data permission issue for reqId {reqId}", "WARNING")
     
     def connectAck(self):
         """Called when connection is acknowledged"""
         self.app.log_message("Connection acknowledged", "INFO")
     
     def nextValidId(self, orderId: int):
-        """Receives next valid order ID"""
+        """
+        Receives next valid order ID - signals successful connection.
+        This is the definitive confirmation that we are connected to IBKR.
+        """
         self.app.next_order_id = orderId
         self.app.connection_state = ConnectionState.CONNECTED
-        self.app.log_message(f"Connected! Next Order ID: {orderId}", "SUCCESS")
+        self.app.reconnect_attempts = 0  # Reset reconnect counter on successful connection
+        self.app.log_message(f"Successfully connected to IBKR! Next Order ID: {orderId}", "SUCCESS")
         self.app.on_connected()
     
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
@@ -235,8 +256,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Connection management
         self.connection_state = ConnectionState.DISCONNECTED
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 5
+        self.max_reconnect_attempts = 10  # Increased to 10 attempts
         self.reconnect_delay = 5
+        self.auto_connect = True  # Auto-connect at startup
+        self.subscribed_contracts = []  # Track subscribed contracts for reconnection
         
         # API settings
         self.host = "127.0.0.1"
@@ -323,6 +346,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Start time checker for hourly trades
         self.root.after(1000, self.check_trade_time)
+        
+        # Auto-connect to IBKR on startup (after GUI is ready)
+        if self.auto_connect:
+            self.log_message("Auto-connect enabled - connecting to IBKR in 2 seconds...", "INFO")
+            self.root.after(2000, self.connect_to_ib)
         
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -595,68 +623,126 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.connect_to_ib()
     
     def connect_to_ib(self):
-        """Establish connection to IBKR"""
+        """
+        Establish connection to IBKR.
+        Creates a new API thread and initiates socket connection.
+        """
         if self.connection_state != ConnectionState.DISCONNECTED:
-            self.log_message("Already connected or connecting", "WARNING")
+            self.log_message("Connection already in progress or established", "WARNING")
             return
+        
+        self.log_message(f"Initiating connection to IBKR at {self.host}:{self.port} (Client ID: {self.client_id})", "INFO")
         
         self.connection_state = ConnectionState.CONNECTING
         self.status_label.config(text="Status: Connecting...")
         self.connect_btn.config(state=tk.DISABLED)
         
-        # Start API thread
+        # Start API thread - this will handle all IBKR communication
         self.running = True
         self.api_thread = threading.Thread(target=self.run_api_thread, daemon=True)
         self.api_thread.start()
         
-        self.log_message(f"Connecting to {self.host}:{self.port}...", "INFO")
+        self.log_message("API thread started, establishing socket connection...", "INFO")
     
     def run_api_thread(self):
-        """Run the API thread"""
+        """
+        Main API thread loop.
+        Establishes socket connection and runs the message processing loop.
+        Will catch any exceptions and trigger reconnection if needed.
+        """
         try:
+            self.log_message(f"Connecting to socket {self.host}:{self.port}...", "INFO")
             EClient.connect(self, self.host, self.port, self.client_id)
+            self.log_message("Socket connected, waiting for nextValidId confirmation...", "INFO")
+            
+            # Run the message loop - this blocks until disconnection
             self.run()
+            
+            self.log_message("API message loop terminated", "WARNING")
         except Exception as e:
-            self.log_message(f"API thread error: {str(e)}", "ERROR")
+            self.log_message(f"API thread exception: {str(e)}", "ERROR")
+        finally:
+            # Connection lost - update state and schedule reconnection
             self.connection_state = ConnectionState.DISCONNECTED
+            self.log_message("Connection lost, scheduling reconnection attempt...", "WARNING")
             self.schedule_reconnect()
     
     def disconnect_from_ib(self):
-        """Disconnect from IBKR"""
+        """
+        Disconnect from IBKR.
+        Stops the API thread and closes the socket connection.
+        """
+        self.log_message("Initiating disconnect from IBKR...", "INFO")
         self.running = False
-        EClient.disconnect(self)
+        
+        try:
+            EClient.disconnect(self)
+        except Exception as e:
+            self.log_message(f"Error during disconnect: {str(e)}", "WARNING")
+        
         self.connection_state = ConnectionState.DISCONNECTED
         self.status_label.config(text="Status: Disconnected")
         self.connect_btn.config(text="Connect", state=tk.NORMAL)
-        self.log_message("Disconnected from IBKR", "INFO")
+        self.log_message("Disconnected from IBKR successfully", "INFO")
     
     def schedule_reconnect(self):
-        """Schedule automatic reconnection"""
+        """
+        Schedule automatic reconnection after connection loss.
+        Will attempt up to max_reconnect_attempts times with reconnect_delay between attempts.
+        """
         if not self.root:
             return
+            
         if self.reconnect_attempts >= self.max_reconnect_attempts:
-            self.log_message("Max reconnection attempts reached. Please reconnect manually.", 
-                           "ERROR")
+            self.log_message(
+                f"Maximum reconnection attempts ({self.max_reconnect_attempts}) reached. "
+                "Please check your connection and reconnect manually.", 
+                "ERROR"
+            )
             self.reconnect_attempts = 0
+            self.status_label.config(text="Status: Disconnected (Manual reconnect required)")
+            self.connect_btn.config(text="Connect", state=tk.NORMAL)
             return
         
         self.reconnect_attempts += 1
-        self.log_message(f"Reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts} "
-                        f"in {self.reconnect_delay} seconds...", "WARNING")
+        self.log_message(
+            f"Scheduling reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts} "
+            f"in {self.reconnect_delay} seconds...", 
+            "WARNING"
+        )
         
+        # Update UI to show reconnection status
+        self.status_label.config(
+            text=f"Status: Reconnecting ({self.reconnect_attempts}/{self.max_reconnect_attempts})..."
+        )
+        
+        # Schedule reconnection
         self.root.after(self.reconnect_delay * 1000, self.connect_to_ib)
     
     def on_connected(self):
-        """Called when successfully connected"""
-        self.reconnect_attempts = 0
+        """
+        Called when successfully connected to IBKR.
+        This is where we initialize all data subscriptions and requests.
+        """
+        self.log_message("Connection established successfully!", "SUCCESS")
+        self.reconnect_attempts = 0  # Reset reconnect counter
+        
+        # Update UI
         self.status_label.config(text="Status: Connected")
         self.connect_btn.config(text="Disconnect", state=tk.NORMAL)
         
-        # Request option chain
+        # Initialize data subscriptions
+        self.log_message("Requesting account updates...", "INFO")
+        self.reqAccountUpdates(True, "")
+        
+        # Request option chain - this will automatically subscribe to market data
+        self.log_message("Requesting SPX option chain for 0DTE...", "INFO")
         self.request_option_chain()
         
-        # Request account updates
-        self.reqAccountUpdates(True, "")
+        # If we're reconnecting, resubscribe to previously subscribed contracts
+        if self.subscribed_contracts:
+            self.log_message(f"Reconnection detected - resubscribing to {len(self.subscribed_contracts)} contracts...", "INFO")
+            self.resubscribe_market_data()
     
     def save_and_reconnect(self):
         """Save settings and reconnect"""
@@ -731,79 +817,111 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         return contract
     
     def request_option_chain(self):
-        """Request the 0DTE SPX option chain"""
+        """
+        Request the 0DTE SPX option chain from IBKR.
+        This will trigger the securityDefinitionOptionParameter callback.
+        """
         if self.connection_state != ConnectionState.CONNECTED:
-            self.log_message("Not connected to IBKR", "WARNING")
+            self.log_message("Cannot request option chain - not connected to IBKR", "WARNING")
             return
         
-        self.log_message("Requesting option chain...", "INFO")
+        self.log_message("Requesting SPX option chain parameters...", "INFO")
         
-        # Create SPX underlying contract
+        # Create SPX underlying contract for option chain request
         spx_contract = Contract()
         spx_contract.symbol = "SPX"
-        spx_contract.secType = "IND"
+        spx_contract.secType = "IND"  # Index
         spx_contract.currency = "USD"
         spx_contract.exchange = "CBOE"
         
-        # Request option parameters
+        # Request option parameters - this returns strikes and expirations
         req_id = self.next_req_id
         self.next_req_id += 1
         
+        self.log_message(f"Requesting option parameters for SPX (reqId: {req_id})...", "INFO")
+        # ConID 416563234 is the SPX index identifier
         self.reqSecDefOptParams(req_id, "SPX", "", "IND", 416563234)
     
     def process_option_chain(self):
-        """Process received option chain data"""
+        """
+        Process received option chain data and create contracts for 0DTE options.
+        This is called after securityDefinitionOptionParameterEnd callback.
+        """
         if not self.option_chain_data:
-            self.log_message("No option chain data received", "WARNING")
+            self.log_message("No option chain data received from IBKR", "WARNING")
             return
+        
+        self.log_message("Processing option chain data...", "INFO")
         
         # Get today's strikes
         for req_id, data in self.option_chain_data.items():
             expirations = data['expirations']
             strikes = data['strikes']
             
-            # Filter for today's expiration
+            self.log_message(f"Received {len(expirations)} expirations and {len(strikes)} strikes", "INFO")
+            
+            # Filter for today's expiration (0DTE)
             if self.current_expiry in expirations:
-                self.log_message(f"Found {len(strikes)} strikes for {self.current_expiry}", 
-                               "SUCCESS")
+                self.log_message(
+                    f"Found 0DTE expiration {self.current_expiry} with {len(strikes)} strikes", 
+                    "SUCCESS"
+                )
                 
-                # Create contracts for all strikes
+                # Create contracts for all strikes (calls and puts)
                 self.spx_contracts = []
                 
                 for strike in strikes:
-                    # Create call and put contracts
+                    # Create call and put contracts for each strike
                     call_contract = self.create_spxw_contract(strike, "C")
                     put_contract = self.create_spxw_contract(strike, "P")
                     
                     self.spx_contracts.append(('C', strike, call_contract))
                     self.spx_contracts.append(('P', strike, put_contract))
                 
-                # Subscribe to market data
+                self.log_message(
+                    f"Created {len(self.spx_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)",
+                    "SUCCESS"
+                )
+                
+                # Subscribe to market data for all contracts
                 self.subscribe_market_data()
                 break
+            else:
+                self.log_message(f"0DTE expiration {self.current_expiry} not found in available expirations", "WARNING")
     
     def subscribe_market_data(self):
-        """Subscribe to real-time market data for all contracts"""
+        """
+        Subscribe to real-time market data for all option contracts.
+        Creates treeview items and initiates market data subscriptions.
+        Tracks subscribed contracts for reconnection scenarios.
+        """
         if not self.root:
             return
-        self.log_message(f"Subscribing to market data for {len(self.spx_contracts)} contracts...", 
-                        "INFO")
+            
+        self.log_message(
+            f"Subscribing to real-time market data for {len(self.spx_contracts)} contracts...", 
+            "INFO"
+        )
         
-        # Clear existing data
+        # Clear existing data structures
         self.market_data.clear()
         self.market_data_map.clear()
+        self.subscribed_contracts.clear()  # Track for reconnection
         
-        # Clear treeview
+        # Clear treeview display
         for item in self.option_tree.get_children():
             self.option_tree.delete(item)
         
+        subscription_count = 0
+        
+        # Subscribe to each contract
         for right, strike, contract in self.spx_contracts:
             req_id = self.next_req_id
             self.next_req_id += 1
             
             contract_key = f"SPX_{strike}_{right}"
             
-            # Initialize market data
+            # Initialize market data structure
             self.market_data[contract_key] = {
                 'contract': contract,
                 'right': right,
@@ -819,22 +937,48 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'tree_item': None
             }
             
-            # Map reqId to contract_key
+            # Map request ID to contract for callback handling
             self.market_data_map[req_id] = contract_key
             
-            # Insert into treeview
+            # Track subscribed contracts for reconnection
+            self.subscribed_contracts.append((right, strike, contract))
+            
+            # Insert into treeview with initial zero values
             values = (right, f"{strike:.2f}", "0.00", "0.00", "0.00", "0",
                      "0.00", "0.00", "0.00", "0.00")
             item = self.option_tree.insert("", tk.END, values=values)
             self.market_data[contract_key]['tree_item'] = item
             
-            # Request market data
+            # Request market data from IBKR
+            # Empty string for generic tick list, False for snapshot, False for regulatory snapshot
             self.reqMktData(req_id, contract, "", False, False, [])
+            subscription_count += 1
         
-        self.log_message("Market data subscription complete", "SUCCESS")
+        self.log_message(
+            f"Successfully subscribed to {subscription_count} contracts - market data updates will begin shortly", 
+            "SUCCESS"
+        )
         
-        # Start updating GUI with market data
+        # Start periodic GUI update loop
         self.root.after(500, self.update_option_chain_display)
+    
+    def resubscribe_market_data(self):
+        """
+        Resubscribe to market data after reconnection.
+        Uses the tracked subscribed_contracts list to restore all subscriptions.
+        """
+        if not self.subscribed_contracts:
+            self.log_message("No previous subscriptions to restore", "INFO")
+            return
+        
+        self.log_message(
+            f"Resubscribing to {len(self.subscribed_contracts)} previously subscribed contracts...",
+            "INFO"
+        )
+        
+        # Use the existing subscribe_market_data method with stored contracts
+        self.spx_contracts = self.subscribed_contracts
+        self.subscribe_market_data()
     
     def update_option_chain_display(self):
         """Update the option chain display with latest market data"""
@@ -880,12 +1024,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.root.after(1000, self.check_trade_time)
     
     def enter_straddle(self):
-        """Enter a long straddle at the top of the hour"""
+        """
+        Enter a long straddle at the top of the hour.
+        Searches for the cheapest call and put with ask price <= $0.50.
+        """
         if self.connection_state != ConnectionState.CONNECTED:
-            self.log_message("Cannot enter straddle: Not connected", "WARNING")
+            self.log_message("Cannot enter straddle: Not connected to IBKR", "WARNING")
             return
         
-        self.log_message("Scanning for straddle entry opportunities...", "INFO")
+        self.log_message("=" * 60, "INFO")
+        self.log_message("HOURLY STRADDLE ENTRY INITIATED", "INFO")
+        self.log_message("Scanning option chain for entry opportunities (ask <= $0.50)...", "INFO")
         
         # Find cheapest call and put with ask <= $0.50
         best_call = None
@@ -893,46 +1042,77 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         best_put = None
         best_put_key = None
         
+        calls_found = 0
+        puts_found = 0
+        
         for contract_key, data in self.market_data.items():
             ask = data['ask']
             
+            # Only consider options with valid ask prices
             if ask <= 0.50 and ask > 0:
                 if data['right'] == 'C':
+                    calls_found += 1
                     if best_call is None or ask < best_call['ask']:
                         best_call = data
                         best_call_key = contract_key
                 elif data['right'] == 'P':
+                    puts_found += 1
                     if best_put is None or ask < best_put['ask']:
                         best_put = data
                         best_put_key = contract_key
         
+        self.log_message(f"Found {calls_found} calls and {puts_found} puts with ask <= $0.50", "INFO")
+        
         # Place orders if we found both legs
         if best_call and best_put:
-            self.log_message(f"Selected Call: Strike {best_call['strike']:.2f} @ ${best_call['ask']:.2f}", 
-                           "SUCCESS")
-            self.log_message(f"Selected Put: Strike {best_put['strike']:.2f} @ ${best_put['ask']:.2f}", 
-                           "SUCCESS")
+            total_cost = best_call['ask'] + best_put['ask']
+            self.log_message(
+                f"STRADDLE SELECTED - Total cost: ${total_cost:.2f}", 
+                "SUCCESS"
+            )
+            self.log_message(
+                f"  Call: Strike {best_call['strike']:.2f} @ ${best_call['ask']:.2f} "
+                f"(Delta: {best_call['delta']:.4f})", 
+                "INFO"
+            )
+            self.log_message(
+                f"  Put:  Strike {best_put['strike']:.2f} @ ${best_put['ask']:.2f} "
+                f"(Delta: {best_put['delta']:.4f})", 
+                "INFO"
+            )
             
             # Place call order
+            self.log_message("Placing CALL order...", "INFO")
             call_order_id = self.place_limit_order(best_call['contract'], "BUY", 1, 
                                                    best_call['ask'])
             self.pending_orders[call_order_id] = (best_call_key, "BUY", 1)
             
             # Place put order
+            self.log_message("Placing PUT order...", "INFO")
             put_order_id = self.place_limit_order(best_put['contract'], "BUY", 1, 
                                                   best_put['ask'])
             self.pending_orders[put_order_id] = (best_put_key, "BUY", 1)
             
-            # Track straddle
-            self.active_straddles.append({
+            # Track straddle for risk management
+            straddle_info = {
                 'call_key': best_call_key,
                 'put_key': best_put_key,
                 'entry_time': datetime.now(),
                 'call_entry_price': best_call['ask'],
-                'put_entry_price': best_put['ask']
-            })
+                'put_entry_price': best_put['ask'],
+                'call_order_id': call_order_id,
+                'put_order_id': put_order_id
+            }
+            self.active_straddles.append(straddle_info)
+            
+            self.log_message(f"Straddle orders placed (Call Order: {call_order_id}, Put Order: {put_order_id})", "SUCCESS")
         else:
-            self.log_message("No suitable options found for straddle (ask <= $0.50)", "WARNING")
+            self.log_message(
+                "STRADDLE ENTRY SKIPPED - No suitable options found with ask <= $0.50", 
+                "WARNING"
+            )
+        
+        self.log_message("=" * 60, "INFO")
     
     def place_limit_order(self, contract: Contract, action: str, quantity: int, 
                          limit_price: float) -> int:
@@ -1237,12 +1417,23 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.root.after(100, self.process_gui_queue)
     
     def log_message(self, message: str, level: str = "INFO"):
-        """Log a message to the GUI"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
+        """
+        Log a message to both the GUI and console.
         
+        Args:
+            message: The message to log
+            level: Log level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # GUI log entry (can include emojis)
+        log_entry = f"[{timestamp}] {message}\n"
         self.log_text.insert(tk.END, log_entry, level)
         self.log_text.see(tk.END)
+        
+        # Console log (no emojis, plain text)
+        console_message = f"[{timestamp}] [{level}] {message}"
+        print(console_message)
         
         # Keep log size manageable
         if int(self.log_text.index('end-1c').split('.')[0]) > 1000:
@@ -1275,5 +1466,23 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
 # ============================================================================
 
 if __name__ == "__main__":
-    app = SPXTradingApp()
-    app.run_gui()
+    try:
+        print("=" * 70)
+        print("SPX 0DTE Options Trading Application - Professional Edition")
+        print("=" * 70)
+        print("[STARTUP] Initializing application components...")
+        
+        app = SPXTradingApp()
+        
+        print("[STARTUP] Application initialized successfully")
+        print("[STARTUP] Launching GUI...")
+        print("[STARTUP] Auto-connect is ENABLED - will connect to IBKR after GUI loads")
+        print("=" * 70)
+        
+        app.run_gui()
+        
+    except Exception as e:
+        print(f"[FATAL ERROR] Application crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        input("Press Enter to exit...")
