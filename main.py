@@ -6,9 +6,9 @@ Date: October 15, 2025
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
+from ttkbootstrap.constants import BOTH, YES, X, Y, LEFT, RIGHT, BOTTOM, TOP, CENTER, END, W, SUNKEN, HORIZONTAL, VERTICAL
 import threading
 import queue
 import time
@@ -17,10 +17,13 @@ from collections import defaultdict
 from enum import Enum
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import pandas as pd
 import numpy as np
 from matplotlib.figure import Figure
+
+if TYPE_CHECKING:
+    from ttkbootstrap import Window
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -104,11 +107,11 @@ class IBKRWrapper(EWrapper):
         if reqId in self.app.market_data_map:
             contract_key = self.app.market_data_map[reqId]
             
-            if tickType == TickType.BID:
+            if tickType == 1:  # BID
                 self.app.market_data[contract_key]['bid'] = price
-            elif tickType == TickType.ASK:
+            elif tickType == 2:  # ASK
                 self.app.market_data[contract_key]['ask'] = price
-            elif tickType == TickType.LAST:
+            elif tickType == 4:  # LAST
                 self.app.market_data[contract_key]['last'] = price
                 
                 # Update position PnL if this is a held position
@@ -119,7 +122,7 @@ class IBKRWrapper(EWrapper):
         if reqId in self.app.market_data_map:
             contract_key = self.app.market_data_map[reqId]
             
-            if tickType == TickType.VOLUME:
+            if tickType == 8:  # VOLUME
                 self.app.market_data[contract_key]['volume'] = size
     
     def tickOptionComputation(self, reqId: TickerId, tickType: TickType,
@@ -277,8 +280,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.api_thread = None
         self.running = False
         
-        # GUI
-        self.root = None
+        # GUI - Will be initialized in setup_gui()
+        self.root: Optional['ttk.Window'] = None
         self.setup_gui()
         
     def setup_gui(self):
@@ -346,7 +349,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         ttk.Button(chain_header, text="Refresh Chain", 
                   command=self.request_option_chain,
-                  bootstyle="warning").pack(side=RIGHT, padx=5)
+                  style="warning.TButton").pack(side=RIGHT, padx=5)
         
         # Option Chain Treeview
         chain_frame = ttk.Frame(left_frame)
@@ -535,11 +538,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         ttk.Button(button_frame, text="Save & Reconnect", 
                   command=self.save_and_reconnect,
-                  bootstyle="success", width=20).pack(side=LEFT, padx=5)
+                  style="success.TButton", width=20).pack(side=LEFT, padx=5)
         
         ttk.Button(button_frame, text="Save Settings", 
                   command=self.save_settings,
-                  bootstyle="info", width=20).pack(side=LEFT, padx=5)
+                  style="info.TButton", width=20).pack(side=LEFT, padx=5)
         
         canvas.pack(side=LEFT, fill=BOTH, expand=YES)
         scrollbar.pack(side=RIGHT, fill=Y)
@@ -557,7 +560,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Connect/Disconnect button
         self.connect_btn = ttk.Button(status_frame, text="Connect",
                                      command=self.toggle_connection,
-                                     bootstyle="success", width=15)
+                                     style="success.TButton", width=15)
         self.connect_btn.pack(side=LEFT, padx=5, pady=5)
         
         # Total PnL
@@ -574,6 +577,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def update_time(self):
         """Update time display"""
+        if not self.root:
+            return
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.time_label.config(text=current_time)
         self.root.after(1000, self.update_time)
@@ -585,11 +590,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def toggle_connection(self):
         """Connect or disconnect from IBKR"""
         if self.connection_state == ConnectionState.CONNECTED:
-            self.disconnect()
+            self.disconnect_from_ib()
         else:
-            self.connect()
+            self.connect_to_ib()
     
-    def connect(self):
+    def connect_to_ib(self):
         """Establish connection to IBKR"""
         if self.connection_state != ConnectionState.DISCONNECTED:
             self.log_message("Already connected or connecting", "WARNING")
@@ -609,17 +614,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def run_api_thread(self):
         """Run the API thread"""
         try:
-            self.connect(self.host, self.port, self.client_id)
+            EClient.connect(self, self.host, self.port, self.client_id)
             self.run()
         except Exception as e:
             self.log_message(f"API thread error: {str(e)}", "ERROR")
             self.connection_state = ConnectionState.DISCONNECTED
             self.schedule_reconnect()
     
-    def disconnect(self):
+    def disconnect_from_ib(self):
         """Disconnect from IBKR"""
         self.running = False
-        self.disconnect()
+        EClient.disconnect(self)
         self.connection_state = ConnectionState.DISCONNECTED
         self.status_label.config(text="Status: Disconnected")
         self.connect_btn.config(text="Connect", state=tk.NORMAL)
@@ -627,6 +632,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def schedule_reconnect(self):
         """Schedule automatic reconnection"""
+        if not self.root:
+            return
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             self.log_message("Max reconnection attempts reached. Please reconnect manually.", 
                            "ERROR")
@@ -637,7 +644,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message(f"Reconnection attempt {self.reconnect_attempts}/{self.max_reconnect_attempts} "
                         f"in {self.reconnect_delay} seconds...", "WARNING")
         
-        self.root.after(self.reconnect_delay * 1000, self.connect)
+        self.root.after(self.reconnect_delay * 1000, self.connect_to_ib)
     
     def on_connected(self):
         """Called when successfully connected"""
@@ -653,13 +660,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def save_and_reconnect(self):
         """Save settings and reconnect"""
+        if not self.root:
+            return
         self.save_settings()
         
         if self.connection_state == ConnectionState.CONNECTED:
-            self.disconnect()
-            self.root.after(1000, self.connect)
+            self.disconnect_from_ib()
+            self.root.after(1000, self.connect_to_ib)
         else:
-            self.connect()
+            self.connect_to_ib()
     
     def save_settings(self):
         """Save settings to file"""
@@ -775,6 +784,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def subscribe_market_data(self):
         """Subscribe to real-time market data for all contracts"""
+        if not self.root:
+            return
         self.log_message(f"Subscribing to market data for {len(self.spx_contracts)} contracts...", 
                         "INFO")
         
@@ -827,6 +838,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def update_option_chain_display(self):
         """Update the option chain display with latest market data"""
+        if not self.root:
+            return
         for contract_key, data in self.market_data.items():
             if data['tree_item']:
                 values = (
@@ -852,6 +865,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def check_trade_time(self):
         """Check if it's time to enter a new straddle"""
+        if not self.root:
+            return
         now = datetime.now()
         
         # Check if it's the top of the hour
@@ -1174,6 +1189,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def update_positions_display(self):
         """Update the positions treeview"""
+        if not self.root:
+            return
         # Clear existing items
         for item in self.position_tree.get_children():
             self.position_tree.delete(item)
@@ -1207,6 +1224,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def process_gui_queue(self):
         """Process messages from API thread to GUI thread"""
+        if not self.root:
+            return
         try:
             while not self.gui_queue.empty():
                 message = self.gui_queue.get_nowait()
@@ -1235,14 +1254,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def on_closing(self):
         """Handle window closing"""
+        if not self.root:
+            return
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
             self.running = False
             if self.connection_state == ConnectionState.CONNECTED:
-                self.disconnect()
+                self.disconnect_from_ib()
             self.root.destroy()
     
     def run_gui(self):
         """Start the GUI main loop"""
+        if not self.root:
+            return
         self.load_settings()
         self.root.mainloop()
 
