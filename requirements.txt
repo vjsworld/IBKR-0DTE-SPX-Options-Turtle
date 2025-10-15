@@ -1,0 +1,12 @@
+# Interactive Brokers API
+ibapi>=9.81.1
+
+# GUI Framework
+ttkbootstrap>=1.10.1
+
+# Data Analysis
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Charting
+matplotlib>=3.7.0
