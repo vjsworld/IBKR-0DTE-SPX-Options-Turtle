@@ -79,7 +79,7 @@ Settings are saved to `settings.json` and persisted between sessions.
 ### Starting the Application
 
 ```bash
-python spx_trader.py
+python main.py
 ```
 
 ### Connecting to IBKR
@@ -165,10 +165,11 @@ DISCONNECTED → CONNECTING → CONNECTED
 ## File Structure
 
 ```
-IBKR-Options-Turtle/
-├── spx_trader.py          # Main application (single file)
-├── requirements.txt       # Python dependencies
+IBKR-0DTE-SPX-Options-Turtle/
+├── main.py               # Main application (single file)
+├── requirements.txt      # Python dependencies
 ├── README.md             # This file
+├── LICENSE               # MIT License
 ├── settings.json         # User settings (created on first save)
 └── .venv/               # Virtual environment
 ```
