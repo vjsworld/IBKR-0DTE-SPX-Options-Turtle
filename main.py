@@ -465,13 +465,43 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                  background=[('selected', '#1a2a3a')],  # Subtle blue selection
                  foreground=[('selected', '#ffffff')])   # White text when selected
         
-        # Create main container
-        main_container = ttk.Frame(self.root)
-        main_container.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        # Create app-wide scrollable container
+        # This allows the entire app to be scrollable if window is too small
+        main_canvas = tk.Canvas(self.root, bg='#000000', highlightthickness=0)
+        main_vsb = ttk.Scrollbar(self.root, orient="vertical", command=main_canvas.yview)
+        main_hsb = ttk.Scrollbar(self.root, orient="horizontal", command=main_canvas.xview)
+        
+        main_container = ttk.Frame(main_canvas)
+        
+        # Configure canvas scrolling
+        main_canvas.configure(yscrollcommand=main_vsb.set, xscrollcommand=main_hsb.set)
+        main_canvas_window = main_canvas.create_window((0, 0), window=main_container, anchor="nw")
+        
+        # Update scroll region when container size changes
+        def configure_scroll_region(event=None):
+            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+            # Also resize the canvas window to match canvas width for proper horizontal layout
+            canvas_width = main_canvas.winfo_width()
+            if canvas_width > 1:
+                main_canvas.itemconfig(main_canvas_window, width=canvas_width)
+        
+        main_container.bind("<Configure>", configure_scroll_region)
+        main_canvas.bind("<Configure>", configure_scroll_region)
+        
+        # Pack scrollbars and canvas
+        main_vsb.pack(side=RIGHT, fill=Y)
+        main_hsb.pack(side=BOTTOM, fill=X)
+        main_canvas.pack(side=LEFT, fill=BOTH, expand=YES)
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(event):
+            main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+        main_canvas.bind_all("<MouseWheel>", on_mousewheel)
         
         # Create notebook for tabs
         self.notebook = ttk.Notebook(main_container)
-        self.notebook.pack(fill=BOTH, expand=YES)
+        self.notebook.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
         # Tab 1: Trading Dashboard
         self.create_trading_tab()
@@ -566,7 +596,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Option Chain Treeview - IBKR Style (Calls on left, Puts on right)
         chain_frame = ttk.Frame(tab)
-        chain_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        chain_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)  # Changed to expand=False so it doesn't take all space
         
         # Scrollbars
         chain_vsb = ttk.Scrollbar(chain_frame, orient=VERTICAL)
@@ -592,7 +622,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             chain_frame, 
             columns=columns, 
             show="headings", 
-            height=30,
+            height=12,  # Reduced from 30 to 12 rows to show activity log
             yscrollcommand=chain_vsb.set,
             xscrollcommand=chain_hsb.set
         )
@@ -877,18 +907,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         put_toolbar.update()
         put_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # Row 3: Log section
+        # Row 3: Log section (now expandable to fill remaining space)
         log_label = ttk.Label(bottom_frame, text="Activity Log", 
                              font=("Arial", 12, "bold"))
         log_label.pack(fill=X, padx=5, pady=(5, 0))
         
         log_frame = ttk.Frame(bottom_frame)
-        log_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)
+        log_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)  # Changed to expand=True
         
         log_vsb = ttk.Scrollbar(log_frame, orient="vertical")
         log_vsb.pack(side=RIGHT, fill=Y)
         
-        self.log_text = tk.Text(log_frame, height=8, bg='#202020', 
+        self.log_text = tk.Text(log_frame, height=10, bg='#202020',  # Increased from 8 to 10
                                fg='#E0E0E0', font=("Consolas", 9),
                                yscrollcommand=log_vsb.set, wrap=tk.WORD)
         log_vsb.config(command=self.log_text.yview)
