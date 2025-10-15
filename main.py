@@ -7,6 +7,7 @@ Date: October 15, 2025
 
 import tkinter as tk
 from tkinter import messagebox
+from tkinter import font as tkfont
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import BOTH, YES, X, Y, LEFT, RIGHT, BOTTOM, TOP, CENTER, END, W, SUNKEN, HORIZONTAL, VERTICAL
 import threading
@@ -21,10 +22,12 @@ from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import pandas as pd
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.patches import Rectangle
 
 if TYPE_CHECKING:
     from ttkbootstrap import Window
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends._backend_tk import NavigationToolbar2Tk
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 
@@ -63,6 +66,7 @@ class IBKRWrapper(EWrapper):
         Handle error messages from IBKR API.
         
         Error codes:
+        - 326: Client ID already in use
         - 502: Couldn't connect to TWS
         - 503: TWS socket port is already in use
         - 504: Not connected
@@ -75,8 +79,28 @@ class IBKRWrapper(EWrapper):
         if errorCode not in [2104, 2106, 2158]:  # Informational messages
             self.app.log_message(error_msg, "ERROR")
         
+        # Client ID already in use - try next client ID
+        if errorCode == 326:
+            self.app.log_message(f"Client ID {self.app.client_id} already in use", "WARNING")
+            if self.app.client_id_iterator < self.app.max_client_id:
+                self.app.client_id_iterator += 1
+                self.app.client_id = self.app.client_id_iterator
+                self.app.log_message(f"Retrying with Client ID {self.app.client_id}...", "INFO")
+                # Mark that we're handling this error specially (don't use normal reconnect logic)
+                self.app.handling_client_id_error = True
+                # Update state
+                self.app.connection_state = ConnectionState.DISCONNECTED
+                self.app.running = False  # Stop current connection loop
+                # Schedule reconnect with new client ID
+                if self.app.root:
+                    self.app.root.after(2000, self.app.retry_connection_with_new_client_id)
+            else:
+                self.app.log_message(f"Exhausted all client IDs (1-{self.app.max_client_id}). Please close other connections.", "ERROR")
+                self.app.connection_state = ConnectionState.DISCONNECTED
+                self.app.running = False
+        
         # Connection-related errors - trigger reconnection
-        if errorCode in [502, 503, 504, 1100, 2110]:
+        elif errorCode in [502, 503, 504, 1100, 2110]:
             self.app.log_message(f"Connection error detected (code {errorCode}). Initiating reconnection...", "WARNING")
             self.app.connection_state = ConnectionState.DISCONNECTED
             self.app.schedule_reconnect()
@@ -85,9 +109,30 @@ class IBKRWrapper(EWrapper):
         elif errorCode == 354:  # Requested market data is not subscribed
             self.app.log_message(f"Market data not available for reqId {reqId}", "WARNING")
         
-        # Permission errors
+        # Historical data errors
         elif errorCode == 162:  # Historical market data Service error
-            self.app.log_message(f"Historical data permission issue for reqId {reqId}", "WARNING")
+            self.app.log_message(f"Historical data permission issue for reqId {reqId}: {errorString}", "WARNING")
+            # Check if this is a historical data request
+            if reqId in self.app.historical_data_requests:
+                contract_key = self.app.historical_data_requests[reqId]
+                self.app.log_message(
+                    f"Historical data unavailable for {contract_key}. "
+                    f"Paper trading accounts may have limited historical data access.",
+                    "WARNING"
+                )
+        elif errorCode == 200:  # No security definition found
+            self.app.log_message(f"Security definition not found for reqId {reqId}: {errorString}", "WARNING")
+        elif errorCode == 366:  # No historical data query found
+            if reqId in self.app.historical_data_requests:
+                contract_key = self.app.historical_data_requests[reqId]
+                self.app.log_message(f"No historical data available for {contract_key}", "WARNING")
+        elif errorCode in [165, 321]:  # Historical data errors
+            if reqId in self.app.historical_data_requests:
+                contract_key = self.app.historical_data_requests[reqId]
+                self.app.log_message(
+                    f"Historical data error for {contract_key}: {errorString}",
+                    "WARNING"
+                )
     
     def connectAck(self):
         """Called when connection is acknowledged"""
@@ -101,7 +146,8 @@ class IBKRWrapper(EWrapper):
         self.app.next_order_id = orderId
         self.app.connection_state = ConnectionState.CONNECTED
         self.app.reconnect_attempts = 0  # Reset reconnect counter on successful connection
-        self.app.log_message(f"Successfully connected to IBKR! Next Order ID: {orderId}", "SUCCESS")
+        self.app.client_id_iterator = 1  # Reset client ID iterator for next connection
+        self.app.log_message(f"Successfully connected to IBKR with Client ID {self.app.client_id}! Next Order ID: {orderId}", "SUCCESS")
         self.app.on_connected()
     
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
@@ -110,40 +156,22 @@ class IBKRWrapper(EWrapper):
                                          strikes: set):
         """
         Receives option chain parameters from IBKR.
-        This callback may be called multiple times for different exchanges.
+        NOT USED - Application uses manual strike calculation instead.
         """
         self.app.log_message(
-            f"Received option parameters - Exchange: {exchange}, Trading Class: {tradingClass}, "
-            f"Expirations: {len(expirations)}, Strikes: {len(strikes)}", 
+            f"Received option parameters (not used - manual chain generation enabled)", 
             "INFO"
         )
-        
-        self.app.option_chain_data[reqId] = {
-            'exchange': exchange,
-            'tradingClass': tradingClass,
-            'multiplier': multiplier,
-            'expirations': expirations,
-            'strikes': sorted(list(strikes))
-        }
     
     def securityDefinitionOptionParameterEnd(self, reqId: int):
         """
         Called when option parameter request is complete.
-        This signals that all option chain data has been received.
+        NOT USED - Application uses manual strike calculation instead.
         """
-        if reqId in self.app.option_chain_data:
-            data = self.app.option_chain_data[reqId]
-            self.app.log_message(
-                f"Option chain request complete (reqId: {reqId}) - "
-                f"Processing {len(data['strikes'])} strikes", 
-                "SUCCESS"
-            )
-            self.app.process_option_chain()
-        else:
-            self.app.log_message(
-                f"Option chain request ended but no data received for reqId {reqId}", 
-                "WARNING"
-            )
+        self.app.log_message(
+            f"Option chain request complete for reqId {reqId} (not used - manual chain generation enabled)", 
+            "INFO"
+        )
     
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float,
                   attrib: TickAttrib):
@@ -191,7 +219,7 @@ class IBKRWrapper(EWrapper):
                 'gamma': gamma if gamma != -2 else 0,
                 'theta': theta if theta != -2 else 0,
                 'vega': vega if vega != -2 else 0,
-                'impliedVol': impliedVol if impliedVol != -2 else 0
+                'iv': impliedVol if impliedVol != -2 else 0  # Changed from 'impliedVol' to 'iv'
             })
     
     def orderStatus(self, orderId: int, status: str, filled: float,
@@ -245,6 +273,7 @@ class IBKRWrapper(EWrapper):
             
             if contract_key not in self.app.historical_data:
                 self.app.historical_data[contract_key] = []
+                self.app.log_message(f"Receiving historical data for {contract_key} (reqId: {reqId})", "INFO")
             
             self.app.historical_data[contract_key].append({
                 'date': bar.date,
@@ -254,12 +283,38 @@ class IBKRWrapper(EWrapper):
                 'close': bar.close,
                 'volume': bar.volume
             })
+        else:
+            self.app.log_message(f"Received historical data for unknown reqId: {reqId}", "WARNING")
     
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         """Called when historical data request is complete"""
         if reqId in self.app.historical_data_requests:
             contract_key = self.app.historical_data_requests[reqId]
-            self.app.calculate_supertrend(contract_key)
+            bar_count = len(self.app.historical_data.get(contract_key, []))
+            
+            if bar_count > 0:
+                self.app.log_message(
+                    f"Historical data complete for {contract_key} - {bar_count} bars ({start} to {end})", 
+                    "SUCCESS"
+                )
+            else:
+                self.app.log_message(
+                    f"Historical data request complete for {contract_key} but no data received. "
+                    f"Paper trading accounts have limited historical data access.",
+                    "WARNING"
+                )
+            
+            # Update the appropriate chart based on contract type
+            if self.app.selected_call_contract and contract_key == f"SPX_{self.app.selected_call_contract.strike}_C":
+                self.app.log_message("Updating call chart with new data", "INFO")
+                if self.app.root:
+                    self.app.root.after(100, self.app.update_call_chart)
+            elif self.app.selected_put_contract and contract_key == f"SPX_{self.app.selected_put_contract.strike}_P":
+                self.app.log_message("Updating put chart with new data", "INFO")
+                if self.app.root:
+                    self.app.root.after(100, self.app.update_put_chart)
+        else:
+            self.app.log_message(f"Historical data end for unknown reqId: {reqId}", "WARNING")
 
 
 # ============================================================================
@@ -295,11 +350,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # API settings
         self.host = "127.0.0.1"
         self.port = 7497  # Paper trading
-        self.client_id = 101
+        self.client_id = 1  # Start with client ID 1
+        self.client_id_iterator = 1  # Current client ID being tried
+        self.max_client_id = 10  # Maximum client ID to try
+        self.handling_client_id_error = False  # Flag to prevent double reconnect
         
         # Strategy parameters
         self.atr_period = 14
         self.chandelier_multiplier = 3.0
+        
+        # Option chain parameters
+        self.strikes_above = 20  # Number of strikes above SPX price
+        self.strikes_below = 20  # Number of strikes below SPX price
+        self.chain_refresh_interval = 3600  # Refresh chain every hour (in seconds)
         
         # Request ID management
         self.next_order_id = 1
@@ -319,9 +382,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.spx_price = 0.0
         self.spx_req_id = None
         
+        # Expiration management
+        self.expiry_offset = 0  # 0 = today (0DTE), 1 = next expiry, etc.
+        self.current_expiry = self.calculate_expiry_date(self.expiry_offset)
+        
         # Option chain
-        self.current_expiry = datetime.now().strftime("%Y%m%d")
-        self.spx_contracts = []  # List of all 0DTE contracts
+        self.spx_contracts = []  # List of all option contracts
         
         # Trading state
         self.last_trade_hour = -1
@@ -395,75 +461,137 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Option Chain & Trading Dashboard")
         
-        # Create main paned window for resizable sections
-        paned = ttk.PanedWindow(tab, orient=HORIZONTAL)
-        paned.pack(fill=BOTH, expand=YES)
-        
-        # Left panel: Option Chain
-        left_frame = ttk.Frame(paned)
-        paned.add(left_frame, weight=3)
-        
-        # Option Chain label and controls
-        chain_header = ttk.Frame(left_frame)
+        # Option Chain header with SPX price and controls
+        chain_header = ttk.Frame(tab)
         chain_header.pack(fill=X, padx=5, pady=5)
         
-        ttk.Label(chain_header, text="SPX 0DTE Option Chain", 
+        ttk.Label(chain_header, text="SPX Option Chain", 
                  font=("Arial", 14, "bold")).pack(side=LEFT, padx=5)
         
-        # SPX Price display
+        # SPX Price display (large and prominent)
         self.spx_price_label = ttk.Label(chain_header, text="SPX: Loading...", 
-                                         font=("Arial", 12, "bold"),
+                                         font=("Arial", 14, "bold"),
                                          foreground="#FF8C00")
         self.spx_price_label.pack(side=LEFT, padx=20)
         
-        ttk.Button(chain_header, text="Refresh Chain", 
-                  command=self.request_option_chain,
-                  style="warning.TButton").pack(side=RIGHT, padx=5)
+        # Expiration selector       
+        self.expiry_offset_var = tk.StringVar(value="0 DTE (Today)")
+        self.expiry_dropdown = ttk.Combobox(
+            chain_header, 
+            textvariable=self.expiry_offset_var,
+            values=self.get_expiration_options(),
+            width=20, 
+            state="readonly"
+        )
+        self.expiry_dropdown.pack(side=RIGHT, padx=5)
+        self.expiry_dropdown.bind('<<ComboboxSelected>>', self.on_expiry_changed)
         
-        # Option Chain Treeview
-        chain_frame = ttk.Frame(left_frame)
+        # Refresh button with white text
+        refresh_btn = ttk.Button(chain_header, text="Refresh Chain", 
+                                command=self.refresh_option_chain)
+        refresh_btn.pack(side=RIGHT, padx=5)
+        # Configure button style to have white text
+        style = ttk.Style()
+        style.configure('RefreshChain.TButton', foreground='white')
+        refresh_btn.configure(style='RefreshChain.TButton')
+        
+        # Option Chain Treeview - IBKR Style (Calls on left, Puts on right)
+        chain_frame = ttk.Frame(tab)
         chain_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
         # Scrollbars
-        chain_vsb = ttk.Scrollbar(chain_frame, orient="vertical")
+        chain_vsb = ttk.Scrollbar(chain_frame, orient=VERTICAL)
         chain_vsb.pack(side=RIGHT, fill=Y)
         
-        chain_hsb = ttk.Scrollbar(chain_frame, orient="horizontal")
+        chain_hsb = ttk.Scrollbar(chain_frame, orient=HORIZONTAL)
         chain_hsb.pack(side=BOTTOM, fill=X)
         
-        # Treeview
-        columns = ("Type", "Strike", "Bid", "Ask", "Last", "Volume", 
-                  "Delta", "Gamma", "Theta", "Vega")
-        self.option_tree = ttk.Treeview(chain_frame, columns=columns, 
-                                       show="headings", height=25,
-                                       yscrollcommand=chain_vsb.set,
-                                       xscrollcommand=chain_hsb.set)
+        # Treeview columns matching IBKR layout
+        # CALLS: Bid, Ask, Last, Volume, Gamma, Vega, Theta, Delta, Imp Volatility
+        # STRIKE (center)
+        # PUTS: Delta, Theta, Vega, Gamma, Volume, Last, Ask, Bid
+        columns = (
+            # Call side (left)
+            "C_Bid", "C_Ask", "C_Last", "C_Vol", "C_Gamma", "C_Vega", "C_Theta", "C_Delta", "C_IV",
+            # Strike (center)
+            "Strike",
+            # Put side (right)
+            "P_Delta", "P_Theta", "P_Vega", "P_Gamma", "P_Vol", "P_Last", "P_Ask", "P_Bid"
+        )
+        
+        self.option_tree = ttk.Treeview(
+            chain_frame, 
+            columns=columns, 
+            show="headings", 
+            height=30,
+            yscrollcommand=chain_vsb.set,
+            xscrollcommand=chain_hsb.set
+        )
         
         chain_vsb.config(command=self.option_tree.yview)
         chain_hsb.config(command=self.option_tree.xview)
         
-        # Configure columns
-        col_widths = {"Type": 60, "Strike": 80, "Bid": 70, "Ask": 70, 
-                     "Last": 70, "Volume": 80, "Delta": 70, "Gamma": 70, 
-                     "Theta": 70, "Vega": 70}
+        # Configure column headers and widths
+        call_headers = {
+            "C_Bid": "Bid", "C_Ask": "Ask", "C_Last": "Last", "C_Vol": "Volume",
+            "C_Gamma": "Gamma", "C_Vega": "Vega", "C_Theta": "Theta", 
+            "C_Delta": "Delta", "C_IV": "Imp Vol"
+        }
+        
+        put_headers = {
+            "P_Delta": "Delta", "P_Theta": "Theta", "P_Vega": "Vega", 
+            "P_Gamma": "Gamma", "P_Vol": "Volume", "P_Last": "Last",
+            "P_Ask": "Ask", "P_Bid": "Bid"
+        }
+        
+        # Set column widths
+        col_width = 70
+        strike_width = 100  # Slightly wider for bold text
+        
+        # Create a custom font for strike column
+        strike_font = tkfont.Font(family="Arial", size=11, weight="bold")
         
         for col in columns:
-            self.option_tree.heading(col, text=col)
-            self.option_tree.column(col, width=col_widths.get(col, 100), 
-                                   anchor=CENTER)
+            if col == "Strike":
+                self.option_tree.heading(col, text="● STRIKE ●")  # Make heading stand out
+                self.option_tree.column(col, width=strike_width, anchor=CENTER)
+            elif col.startswith("C_"):
+                self.option_tree.heading(col, text=call_headers[col])
+                self.option_tree.column(col, width=col_width, anchor=CENTER)
+            else:  # Put columns
+                self.option_tree.heading(col, text=put_headers[col])
+                self.option_tree.column(col, width=col_width, anchor=CENTER)
+        
+        # Configure row tags for ITM/OTM color coding
+        strike_font = tkfont.Font(family="Arial", size=11, weight="bold")
+        self.option_tree.tag_configure("call_itm", background="#1e3a1e", font=strike_font)  # Dark green for ITM calls
+        self.option_tree.tag_configure("call_otm", background="#181818", font=strike_font)  # Default dark
+        self.option_tree.tag_configure("put_itm", background="#3a1e1e", font=strike_font)   # Dark red for ITM puts
+        self.option_tree.tag_configure("put_otm", background="#181818", font=strike_font)   # Default dark
+        self.option_tree.tag_configure("atm", background="#2e2e2e", font=strike_font)       # Slightly lighter for ATM
         
         self.option_tree.pack(fill=BOTH, expand=YES)
         
-        # Right panel: Positions, Orders, and Log
-        right_frame = ttk.Frame(paned)
-        paned.add(right_frame, weight=2)
+        # Bind click event for option chain
+        self.option_tree.bind('<ButtonRelease-1>', self.on_option_chain_click)
         
-        # Positions section
-        pos_label = ttk.Label(right_frame, text="Open Positions", 
+        # Bottom panel: Positions/Orders side-by-side, then Charts, then Log
+        bottom_frame = ttk.Frame(tab)
+        bottom_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        
+        # Row 1: Positions and Orders side-by-side
+        pos_order_frame = ttk.Frame(bottom_frame)
+        pos_order_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)
+        
+        # Positions section (left side)
+        pos_container = ttk.Frame(pos_order_frame)
+        pos_container.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
+        
+        pos_label = ttk.Label(pos_container, text="Open Positions", 
                              font=("Arial", 12, "bold"))
         pos_label.pack(fill=X, padx=5, pady=(5, 0))
         
-        pos_frame = ttk.Frame(right_frame)
+        pos_frame = ttk.Frame(pos_container)
         pos_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
         pos_vsb = ttk.Scrollbar(pos_frame, orient="vertical")
@@ -471,7 +599,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         pos_columns = ("Contract", "Qty", "Avg Cost", "Last", "PnL", "PnL%")
         self.position_tree = ttk.Treeview(pos_frame, columns=pos_columns,
-                                         show="headings", height=8,
+                                         show="headings", height=6,
                                          yscrollcommand=pos_vsb.set)
         pos_vsb.config(command=self.position_tree.yview)
         
@@ -481,12 +609,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.position_tree.pack(fill=BOTH, expand=YES)
         
-        # Orders section
-        order_label = ttk.Label(right_frame, text="Active Orders", 
+        # Orders section (right side)
+        order_container = ttk.Frame(pos_order_frame)
+        order_container.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
+        
+        order_label = ttk.Label(order_container, text="Active Orders", 
                                font=("Arial", 12, "bold"))
         order_label.pack(fill=X, padx=5, pady=(5, 0))
         
-        order_frame = ttk.Frame(right_frame)
+        order_frame = ttk.Frame(order_container)
         order_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
         order_vsb = ttk.Scrollbar(order_frame, orient="vertical")
@@ -504,37 +635,140 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.order_tree.pack(fill=BOTH, expand=YES)
         
-        # Chart section with Matplotlib
-        chart_label = ttk.Label(right_frame, text="Supertrend Chart", 
-                               font=("Arial", 12, "bold"))
-        chart_label.pack(fill=X, padx=5, pady=(5, 0))
+        # Row 2: Charts side-by-side (Calls on left, Puts on right)
+        charts_frame = ttk.Frame(bottom_frame)
+        charts_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
-        chart_frame = ttk.Frame(right_frame)
-        chart_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        # Call chart (left side)
+        call_chart_container = ttk.Frame(charts_frame)
+        call_chart_container.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
         
-        self.fig = Figure(figsize=(6, 3), dpi=80, facecolor='#181818')
-        self.ax = self.fig.add_subplot(111, facecolor='#202020')
-        self.ax.tick_params(colors='#E0E0E0')
-        self.ax.spines['bottom'].set_color('#FF8C00')
-        self.ax.spines['top'].set_color('#FF8C00')
-        self.ax.spines['left'].set_color('#FF8C00')
-        self.ax.spines['right'].set_color('#FF8C00')
+        call_chart_header = ttk.Frame(call_chart_container)
+        call_chart_header.pack(fill=X, padx=5, pady=(5, 0))
         
-        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().pack(fill=BOTH, expand=YES)
+        ttk.Label(call_chart_header, text="Call Chart", 
+                 font=("Arial", 12, "bold")).pack(side=LEFT)
         
-        # Log section
-        log_label = ttk.Label(right_frame, text="Activity Log", 
+        # Days back selector for calls
+        ttk.Label(call_chart_header, text="Days:").pack(side=RIGHT, padx=(5, 2))
+        self.call_days_var = tk.StringVar(value="1")
+        call_days = ttk.Combobox(call_chart_header, textvariable=self.call_days_var,
+                                 values=["1", "2", "5", "10", "20"],
+                                 width=5, state="readonly")
+        call_days.pack(side=RIGHT, padx=2)
+        call_days.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
+        
+        # Timeframe dropdown for calls
+        ttk.Label(call_chart_header, text="Interval:").pack(side=RIGHT, padx=(5, 2))
+        self.call_timeframe_var = tk.StringVar(value="1 min")
+        call_timeframe = ttk.Combobox(call_chart_header, textvariable=self.call_timeframe_var,
+                                      values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
+                                      width=8, state="readonly")
+        call_timeframe.pack(side=RIGHT, padx=0)
+        call_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
+        
+        call_chart_frame = ttk.Frame(call_chart_container)
+        call_chart_frame.pack(fill=BOTH, expand=YES, padx=0, pady=0)
+        
+        self.call_fig = Figure(figsize=(5, 4), dpi=80, facecolor='#181818')
+        self.call_fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.10)
+        self.call_ax = self.call_fig.add_subplot(111, facecolor='#202020')
+        self.call_ax.tick_params(colors='#E0E0E0', labelsize=8)
+        self.call_ax.spines['bottom'].set_color('#FF8C00')
+        self.call_ax.spines['top'].set_color('#FF8C00')
+        self.call_ax.spines['left'].set_color('#FF8C00')
+        self.call_ax.spines['right'].set_color('#FF8C00')
+        self.call_ax.set_title("Select a Call from chain", color='#E0E0E0', fontsize=10)
+        
+        self.call_canvas = FigureCanvasTkAgg(self.call_fig, master=call_chart_frame)
+        self.call_canvas.get_tk_widget().pack(fill=BOTH, expand=YES, padx=0, pady=0)
+        
+        # Add loading spinner overlay for call chart (initially hidden)
+        self.call_loading_frame = tk.Frame(call_chart_frame, bg='#181818')
+        self.call_loading_label = ttk.Label(self.call_loading_frame, 
+                                            text="⟳ Loading chart data...",
+                                            font=("Arial", 12),
+                                            foreground="#FF8C00",
+                                            background="#181818")
+        self.call_loading_label.pack(expand=True)
+        self.call_loading_timeout_id = None  # For timeout tracking
+        
+        # Add navigation toolbar for zoom/pan
+        call_toolbar = NavigationToolbar2Tk(self.call_canvas, call_chart_frame)
+        call_toolbar.update()
+        call_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Put chart (right side)
+        put_chart_container = ttk.Frame(charts_frame)
+        put_chart_container.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
+        
+        put_chart_header = ttk.Frame(put_chart_container)
+        put_chart_header.pack(fill=X, padx=5, pady=(5, 0))
+        
+        ttk.Label(put_chart_header, text="Put Chart", 
+                 font=("Arial", 12, "bold")).pack(side=LEFT)
+        
+        # Days back selector for puts
+        ttk.Label(put_chart_header, text="Days:").pack(side=RIGHT, padx=(5, 2))
+        self.put_days_var = tk.StringVar(value="5")
+        put_days = ttk.Combobox(put_chart_header, textvariable=self.put_days_var,
+                                values=["1", "2", "5", "10", "20"],
+                                width=5, state="readonly")
+        put_days.pack(side=RIGHT, padx=2)
+        put_days.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
+        
+        # Timeframe dropdown for puts
+        ttk.Label(put_chart_header, text="Interval:").pack(side=RIGHT, padx=(5, 2))
+        self.put_timeframe_var = tk.StringVar(value="1 min")
+        put_timeframe = ttk.Combobox(put_chart_header, textvariable=self.put_timeframe_var,
+                                     values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
+                                     width=8, state="readonly")
+        put_timeframe.pack(side=RIGHT, padx=2)
+        put_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
+        
+        put_chart_frame = ttk.Frame(put_chart_container)
+        put_chart_frame.pack(fill=BOTH, expand=YES, padx=2, pady=2)
+        
+        self.put_fig = Figure(figsize=(5, 4), dpi=80, facecolor='#181818')
+        self.put_fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.10)
+        self.put_ax = self.put_fig.add_subplot(111, facecolor='#202020')
+        self.put_ax.tick_params(colors='#E0E0E0', labelsize=8)
+        self.put_ax.spines['bottom'].set_color('#FF8C00')
+        self.put_ax.spines['top'].set_color('#FF8C00')
+        self.put_ax.spines['left'].set_color('#FF8C00')
+        self.put_ax.spines['right'].set_color('#FF8C00')
+        self.put_ax.set_title("Select a Put from chain", color='#E0E0E0', fontsize=10)
+        
+        self.put_canvas = FigureCanvasTkAgg(self.put_fig, master=put_chart_frame)
+        self.put_canvas.get_tk_widget().pack(fill=BOTH, expand=YES, padx=0, pady=0)
+        
+        # Add loading spinner overlay for put chart (initially hidden)
+        self.put_loading_frame = tk.Frame(put_chart_frame, bg='#181818')
+        self.put_loading_label = ttk.Label(self.put_loading_frame, 
+                                           text="⟳ Loading chart data...",
+                                           font=("Arial", 12),
+                                           foreground="#FF8C00",
+                                           background="#181818")
+        self.put_loading_label.pack(expand=True)
+        self.put_loading_timeout_id = None  # For timeout tracking
+        
+        # Add navigation toolbar for zoom/pan
+        put_toolbar = NavigationToolbar2Tk(self.put_canvas, put_chart_frame)
+        put_toolbar.update()
+        put_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Row 3: Log section
+        log_label = ttk.Label(bottom_frame, text="Activity Log", 
                              font=("Arial", 12, "bold"))
         log_label.pack(fill=X, padx=5, pady=(5, 0))
         
-        log_frame = ttk.Frame(right_frame)
-        log_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
+        log_frame = ttk.Frame(bottom_frame)
+        log_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)
         
         log_vsb = ttk.Scrollbar(log_frame, orient="vertical")
         log_vsb.pack(side=RIGHT, fill=Y)
         
-        self.log_text = tk.Text(log_frame, height=10, bg='#202020', 
+        self.log_text = tk.Text(log_frame, height=8, bg='#202020', 
                                fg='#E0E0E0', font=("Consolas", 9),
                                yscrollcommand=log_vsb.set, wrap=tk.WORD)
         log_vsb.config(command=self.log_text.yview)
@@ -545,6 +779,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_text.tag_config("WARNING", foreground="#FFA500")
         self.log_text.tag_config("SUCCESS", foreground="#44FF44")
         self.log_text.tag_config("INFO", foreground="#E0E0E0")
+        
+        # Initialize chart tracking variables
+        self.selected_call_contract = None
+        self.selected_put_contract = None
+        self.chart_update_interval = 5000  # Legacy variable (no longer used for auto-refresh)
+        
+        # Debounce variables for responsive chart updates
+        self.call_chart_update_pending = None
+        self.put_chart_update_pending = None
+        self.chart_debounce_delay = 100  # 100ms debounce for TradingView-like responsiveness
     
     def create_settings_tab(self):
         """Create the settings tab"""
@@ -600,6 +844,24 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.chandelier_entry = ttk.Entry(strategy_frame, width=30)
         self.chandelier_entry.insert(0, str(self.chandelier_multiplier))
         self.chandelier_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
+        
+        ttk.Label(strategy_frame, text="Strikes Above SPX:").grid(
+            row=2, column=0, sticky=W, pady=5)
+        self.strikes_above_entry = ttk.Entry(strategy_frame, width=30)
+        self.strikes_above_entry.insert(0, str(self.strikes_above))
+        self.strikes_above_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
+        
+        ttk.Label(strategy_frame, text="Strikes Below SPX:").grid(
+            row=3, column=0, sticky=W, pady=5)
+        self.strikes_below_entry = ttk.Entry(strategy_frame, width=30)
+        self.strikes_below_entry.insert(0, str(self.strikes_below))
+        self.strikes_below_entry.grid(row=3, column=1, sticky=W, padx=10, pady=5)
+        
+        ttk.Label(strategy_frame, text="Chain Refresh Interval (seconds):").grid(
+            row=4, column=0, sticky=W, pady=5)
+        self.chain_refresh_entry = ttk.Entry(strategy_frame, width=30)
+        self.chain_refresh_entry.insert(0, str(self.chain_refresh_interval))
+        self.chain_refresh_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
         
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
@@ -667,15 +929,34 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         """
         Establish connection to IBKR.
         Creates a new API thread and initiates socket connection.
+        Will automatically try client IDs 1-10 if one is already in use.
         """
         if self.connection_state != ConnectionState.DISCONNECTED:
             self.log_message("Connection already in progress or established", "WARNING")
             return
         
+        # Read connection parameters from UI if not already set (during reconnection)
+        try:
+            if self.host_entry and self.host_entry.get():
+                self.host = self.host_entry.get()
+            if self.port_entry and self.port_entry.get():
+                self.port = int(self.port_entry.get())
+        except:
+            pass  # Use existing values if entries aren't available
+        
+        # Ensure we have valid host and port
+        if not self.host or not self.port:
+            self.log_message("Invalid host or port configuration", "ERROR")
+            self.connection_state = ConnectionState.DISCONNECTED
+            return
+        
+        # Ensure client_id matches the iterator (in case of retries)
+        self.client_id = self.client_id_iterator
+        
         self.log_message(f"Initiating connection to IBKR at {self.host}:{self.port} (Client ID: {self.client_id})", "INFO")
         
         self.connection_state = ConnectionState.CONNECTING
-        self.status_label.config(text="Status: Connecting...")
+        self.status_label.config(text=f"Status: Connecting (ID: {self.client_id})...")
         self.connect_btn.config(state=tk.DISABLED)
         
         # Start API thread - this will handle all IBKR communication
@@ -722,9 +1003,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message(f"Error during disconnect: {str(e)}", "WARNING")
         
         self.connection_state = ConnectionState.DISCONNECTED
+        self.client_id_iterator = 1  # Reset client ID iterator for next connection
         self.status_label.config(text="Status: Disconnected")
         self.connect_btn.config(text="Connect", state=tk.NORMAL)
         self.log_message("Disconnected from IBKR successfully", "INFO")
+    
+    def retry_connection_with_new_client_id(self):
+        """Retry connection with new client ID after error 326"""
+        self.handling_client_id_error = False
+        self.connect_to_ib()
     
     def schedule_reconnect(self):
         """
@@ -732,6 +1019,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         Will attempt up to max_reconnect_attempts times with reconnect_delay between attempts.
         """
         if not self.root:
+            return
+        
+        # Don't schedule reconnect if we're handling client ID error separately
+        if self.handling_client_id_error:
             return
             
         if self.reconnect_attempts >= self.max_reconnect_attempts:
@@ -809,13 +1100,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.client_id = int(self.client_entry.get())
             self.atr_period = int(self.atr_entry.get())
             self.chandelier_multiplier = float(self.chandelier_entry.get())
+            self.strikes_above = int(self.strikes_above_entry.get())
+            self.strikes_below = int(self.strikes_below_entry.get())
+            self.chain_refresh_interval = int(self.chain_refresh_entry.get())
             
             settings = {
                 'host': self.host,
                 'port': self.port,
                 'client_id': self.client_id,
                 'atr_period': self.atr_period,
-                'chandelier_multiplier': self.chandelier_multiplier
+                'chandelier_multiplier': self.chandelier_multiplier,
+                'strikes_above': self.strikes_above,
+                'strikes_below': self.strikes_below,
+                'chain_refresh_interval': self.chain_refresh_interval
             }
             
             with open('settings.json', 'w') as f:
@@ -838,6 +1135,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.atr_period = settings.get('atr_period', self.atr_period)
                 self.chandelier_multiplier = settings.get('chandelier_multiplier', 
                                                          self.chandelier_multiplier)
+                self.strikes_above = settings.get('strikes_above', self.strikes_above)
+                self.strikes_below = settings.get('strikes_below', self.strikes_below)
+                self.chain_refresh_interval = settings.get('chain_refresh_interval', 
+                                                          self.chain_refresh_interval)
                 
                 self.log_message("Settings loaded successfully", "SUCCESS")
         except Exception as e:
@@ -880,8 +1181,80 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # OPTION CHAIN MANAGEMENT
     # ========================================================================
     
+    def calculate_expiry_date(self, offset: int) -> str:
+        """
+        Calculate expiration date based on offset.
+        offset = 0: Today (0DTE)
+        offset = 1: Next trading day
+        offset = 2: Day after next, etc.
+        
+        For SPX options, expirations are Mon/Wed/Fri.
+        """
+        from datetime import timedelta
+        
+        current_date = datetime.now()
+        target_date = current_date
+        
+        # SPX has options expiring Monday, Wednesday, Friday
+        # 0 = Monday, 2 = Wednesday, 4 = Friday
+        expiry_days = [0, 2, 4]
+        
+        days_checked = 0
+        expirations_found = 0
+        
+        # Find the Nth expiration (where N = offset)
+        while expirations_found <= offset:
+            if target_date.weekday() in expiry_days:
+                if expirations_found == offset:
+                    return target_date.strftime("%Y%m%d")
+                expirations_found += 1
+            target_date += timedelta(days=1)
+            days_checked += 1
+            
+            # Safety check
+            if days_checked > 60:
+                self.log_message("Error calculating expiry date - exceeded max days", "ERROR")
+                return datetime.now().strftime("%Y%m%d")
+        
+        return target_date.strftime("%Y%m%d")
+    
+    def get_expiration_options(self) -> list:
+        """Get list of expiration options for dropdown"""
+        options = []
+        
+        for i in range(10):  # Show next 10 expirations
+            expiry_date = self.calculate_expiry_date(i)
+            date_obj = datetime.strptime(expiry_date, "%Y%m%d")
+            
+            if i == 0:
+                label = f"0 DTE (Today - {date_obj.strftime('%m/%d/%Y')})"
+            elif i == 1:
+                label = f"1 DTE (Next - {date_obj.strftime('%m/%d/%Y')})"
+            else:
+                label = f"{i} DTE ({date_obj.strftime('%m/%d/%Y')})"
+            
+            options.append(label)
+        
+        return options
+    
+    def on_expiry_changed(self, event=None):
+        """Handle expiration dropdown change"""
+        selected = self.expiry_offset_var.get()
+        
+        # Extract offset from label (first number)
+        offset = int(selected.split()[0])
+        
+        self.expiry_offset = offset
+        self.current_expiry = self.calculate_expiry_date(offset)
+        
+        self.log_message(f"Expiration changed to: {self.current_expiry} (offset: {offset})", "INFO")
+        
+        # Refresh the option chain with new expiration
+        if self.connection_state == ConnectionState.CONNECTED:
+            self.refresh_option_chain()
+    
     def create_spxw_contract(self, strike: float, right: str) -> Contract:
-        """Create a SPXW 0DTE option contract"""
+        """Create a SPXW option contract with current expiration"""
         contract = Contract()
         contract.symbol = "SPX"
         contract.secType = "OPT"
@@ -894,60 +1267,50 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         contract.multiplier = "100"
         return contract
     
+    def refresh_option_chain(self):
+        """
+        Refresh the option chain - called manually or automatically every hour.
+        Unsubscribes from old data and requests new chain.
+        """
+        self.log_message("Refreshing option chain...", "INFO")
+        
+        # Cancel existing market data subscriptions
+        for req_id in list(self.market_data_map.keys()):
+            self.cancelMktData(req_id)
+        
+        # Clear data structures
+        self.market_data.clear()
+        self.market_data_map.clear()
+        self.option_chain_data.clear()
+        
+        # Request new chain
+        self.request_option_chain()
+        
+        # Schedule next automatic refresh
+        if self.root and self.chain_refresh_interval > 0:
+            self.root.after(self.chain_refresh_interval * 1000, self.refresh_option_chain)
+    
     def request_option_chain(self):
         """
-        Request the 0DTE SPX option chain from IBKR.
-        This will trigger the securityDefinitionOptionParameter callback.
+        Build option chain using manual strike calculation.
+        Always uses manual method instead of requesting from IBKR API.
         """
         if self.connection_state != ConnectionState.CONNECTED:
-            self.log_message("Cannot request option chain - not connected to IBKR", "WARNING")
+            self.log_message("Cannot create option chain - not connected to IBKR", "WARNING")
             return
         
-        self.log_message("Requesting SPX option chain parameters...", "INFO")
+        self.log_message("Building option chain using manual strike calculation...", "INFO")
         
-        # Request option parameters - this returns strikes and expirations
-        req_id = self.next_req_id
-        self.next_req_id += 1
-        
-        self.log_message(f"Requesting option parameters for SPX (reqId: {req_id})...", "INFO")
-        
-        # Method 1: Try with just symbol and exchange
-        # ConID 416563234 is the SPX index identifier
-        try:
-            self.reqSecDefOptParams(req_id, "SPX", "", "IND", 416563234)
-            self.log_message("Option chain request sent using ConID 416563234", "INFO")
-            self.log_message("Waiting for option chain response (will timeout after 10 seconds)...", "INFO")
-            
-            # Set timeout fallback - if no response in 10 seconds, use manual method
-            if self.root:
-                self.root.after(10000, self._check_option_chain_timeout, req_id)
-                
-        except Exception as e:
-            self.log_message(f"Error requesting option chain: {str(e)}", "ERROR")
-            
-            # Fallback: Try alternative approach
-            self.log_message("Trying alternative option chain request method...", "INFO")
-            # If first method fails, we'll manually create some test contracts
-            self.manual_option_chain_fallback()
-    
-    def _check_option_chain_timeout(self, req_id):
-        """Check if option chain request timed out"""
-        if req_id not in self.option_chain_data:
-            self.log_message(
-                "Option chain request timed out - no response from IBKR after 10 seconds", 
-                "WARNING"
-            )
-            self.log_message("Switching to manual option chain creation...", "INFO")
-            self.manual_option_chain_fallback()
-        else:
-            self.log_message("Option chain data received successfully", "SUCCESS")
+        # Always use manual option chain generation
+        self.manual_option_chain_fallback()
     
     def manual_option_chain_fallback(self):
         """
-        Fallback method to manually create option chain based on SPX price.
-        Used when reqSecDefOptParams fails or times out.
+        Manually create option chain based on SPX price.
+        Primary method for building the option chain - creates strikes dynamically
+        around the current SPX price based on configured strike ranges.
         """
-        self.log_message("Using manual option chain fallback method...", "WARNING")
+        self.log_message("Building option chain from SPX price and strike settings...", "INFO")
         
         # Wait for SPX price if not available yet
         if self.spx_price == 0:
@@ -959,14 +1322,25 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.log_message(f"Creating option chain around SPX price: ${self.spx_price:.2f}", "INFO")
         
-        # Create strikes around current SPX price (every 5 points, ±50 points)
+        # Create strikes around current SPX price (every 5 points)
         center_strike = round(self.spx_price / 5) * 5  # Round to nearest 5
         strikes = []
         
-        for offset in range(-50, 55, 5):  # -50 to +50 in 5-point increments
-            strikes.append(center_strike + offset)
+        # Generate strikes: strikes_below below ATM, then ATM, then strikes_above above ATM
+        # Start from (ATM - strikes_below*5) and go to (ATM + strikes_above*5)
+        start_strike = center_strike - (self.strikes_below * 5)
+        end_strike = center_strike + (self.strikes_above * 5)
         
-        self.log_message(f"Manually created {len(strikes)} strikes from {min(strikes)} to {max(strikes)}", "INFO")
+        current_strike = start_strike
+        while current_strike <= end_strike:
+            strikes.append(current_strike)
+            current_strike += 5
+        
+        self.log_message(
+            f"Created {len(strikes)} strikes from ${min(strikes):.2f} to ${max(strikes):.2f} "
+            f"(center: ${center_strike:.2f}, {self.strikes_below} below, {self.strikes_above} above)",
+            "INFO"
+        )
         
         # Create contracts for all strikes
         self.spx_contracts = []
@@ -979,7 +1353,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.spx_contracts.append(('P', strike, put_contract))
         
         self.log_message(
-            f"Manually created {len(self.spx_contracts)} option contracts", 
+            f"Created {len(self.spx_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)", 
             "SUCCESS"
         )
         
@@ -1036,8 +1410,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def subscribe_market_data(self):
         """
         Subscribe to real-time market data for all option contracts.
-        Creates treeview items and initiates market data subscriptions.
-        Tracks subscribed contracts for reconnection scenarios.
+        Creates treeview rows with calls on left and puts on right (IBKR style).
         """
         if not self.root:
             return
@@ -1050,61 +1423,99 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Clear existing data structures
         self.market_data.clear()
         self.market_data_map.clear()
-        self.subscribed_contracts.clear()  # Track for reconnection
+        self.subscribed_contracts.clear()
         
         # Clear treeview display
         for item in self.option_tree.get_children():
             self.option_tree.delete(item)
         
-        subscription_count = 0
+        # Organize contracts by strike (calls and puts together)
+        strikes_dict = {}
         
-        # Subscribe to each contract
         for right, strike, contract in self.spx_contracts:
-            req_id = self.next_req_id
-            self.next_req_id += 1
+            if strike not in strikes_dict:
+                strikes_dict[strike] = {'call': None, 'put': None, 'call_contract': None, 'put_contract': None}
             
-            contract_key = f"SPX_{strike}_{right}"
+            if right == 'C':
+                strikes_dict[strike]['call'] = right
+                strikes_dict[strike]['call_contract'] = contract
+            else:
+                strikes_dict[strike]['put'] = right
+                strikes_dict[strike]['put_contract'] = contract
+        
+        # Sort strikes
+        sorted_strikes = sorted(strikes_dict.keys())
+        
+        # Subscribe and create display rows
+        for strike in sorted_strikes:
+            strike_data = strikes_dict[strike]
             
-            # Initialize market data structure
-            self.market_data[contract_key] = {
-                'contract': contract,
-                'right': right,
-                'strike': strike,
-                'bid': 0,
-                'ask': 0,
-                'last': 0,
-                'volume': 0,
-                'delta': 0,
-                'gamma': 0,
-                'theta': 0,
-                'vega': 0,
-                'tree_item': None
-            }
+            # Subscribe to call
+            if strike_data['call']:
+                req_id = self.next_req_id
+                self.next_req_id += 1
+                
+                contract_key = f"SPX_{strike}_C"
+                self.market_data_map[req_id] = contract_key
+                
+                self.market_data[contract_key] = {
+                    'contract': strike_data['call_contract'],
+                    'right': 'C',
+                    'strike': strike,
+                    'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                }
+                
+                self.subscribed_contracts.append(('C', strike, strike_data['call_contract']))
+                self.reqMktData(req_id, strike_data['call_contract'], "", False, False, [])
             
-            # Map request ID to contract for callback handling
-            self.market_data_map[req_id] = contract_key
+            # Subscribe to put
+            if strike_data['put']:
+                req_id = self.next_req_id
+                self.next_req_id += 1
+                
+                contract_key = f"SPX_{strike}_P"
+                self.market_data_map[req_id] = contract_key
+                
+                self.market_data[contract_key] = {
+                    'contract': strike_data['put_contract'],
+                    'right': 'P',
+                    'strike': strike,
+                    'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                }
+                
+                self.subscribed_contracts.append(('P', strike, strike_data['put_contract']))
+                self.reqMktData(req_id, strike_data['put_contract'], "", False, False, [])
             
-            # Track subscribed contracts for reconnection
-            self.subscribed_contracts.append((right, strike, contract))
+            # Create treeview row with call on left, strike in center, put on right
+            # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
+            values = (
+                "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00", "0.00", "0.00",  # Call data
+                f"{strike:.2f}",  # Strike
+                "0.00", "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00"  # Put data
+            )
             
-            # Insert into treeview with initial zero values
-            values = (right, f"{strike:.2f}", "0.00", "0.00", "0.00", "0",
-                     "0.00", "0.00", "0.00", "0.00")
-            item = self.option_tree.insert("", tk.END, values=values)
-            self.market_data[contract_key]['tree_item'] = item
+            item = self.option_tree.insert("", tk.END, values=values, tags=(str(strike),))
             
-            # Request market data from IBKR
-            # Empty string for generic tick list, False for snapshot, False for regulatory snapshot
-            self.reqMktData(req_id, contract, "", False, False, [])
-            subscription_count += 1
+            # Store tree item reference in both call and put data
+            if f"SPX_{strike}_C" in self.market_data:
+                self.market_data[f"SPX_{strike}_C"]['tree_item'] = item
+            if f"SPX_{strike}_P" in self.market_data:
+                self.market_data[f"SPX_{strike}_P"]['tree_item'] = item
         
         self.log_message(
-            f"Successfully subscribed to {subscription_count} contracts - market data updates will begin shortly", 
+            f"Successfully subscribed to {len(sorted_strikes) * 2} contracts ({len(sorted_strikes)} strikes)", 
             "SUCCESS"
         )
         
         # Start periodic GUI update loop
         self.root.after(500, self.update_option_chain_display)
+        
+        # Schedule automatic chain refresh based on settings
+        refresh_ms = self.chain_refresh_interval * 1000  # Convert seconds to milliseconds
+        self.log_message(f"Automatic chain refresh scheduled every {self.chain_refresh_interval} seconds", "INFO")
+        self.root.after(refresh_ms, self.refresh_option_chain)
     
     def resubscribe_market_data(self):
         """
@@ -1125,27 +1536,109 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.subscribe_market_data()
     
     def update_option_chain_display(self):
-        """Update the option chain display with latest market data"""
+        """
+        Update the option chain display with latest market data.
+        Updates rows with call data on left and put data on right (IBKR style).
+        """
         if not self.root:
             return
-        for contract_key, data in self.market_data.items():
-            if data['tree_item']:
-                values = (
-                    data['right'],
-                    f"{data['strike']:.2f}",
-                    f"{data['bid']:.2f}",
-                    f"{data['ask']:.2f}",
-                    f"{data['last']:.2f}",
-                    f"{data['volume']}",
-                    f"{data['delta']:.4f}",
-                    f"{data['gamma']:.4f}",
-                    f"{data['theta']:.4f}",
-                    f"{data['vega']:.4f}"
-                )
-                self.option_tree.item(data['tree_item'], values=values)
         
-        # Schedule next update
-        self.root.after(500, self.update_option_chain_display)
+        try:
+            # Helper function to safely format values
+            def safe_format(value, format_str, default="—"):
+                """Safely format a value, returning default if None or invalid"""
+                if value is None:
+                    return default
+                try:
+                    if format_str == "int":
+                        return str(int(value)) if value != 0 else "0"
+                    elif format_str == ".2f":
+                        return f"{float(value):.2f}" if value != 0 else "0.00"
+                    elif format_str == ".4f":
+                        return f"{float(value):.4f}" if value != 0 else "0.0000"
+                    else:
+                        return str(value)
+                except (ValueError, TypeError):
+                    return default
+            
+            # Group updates by strike (each row has both call and put)
+            strikes_to_update = {}
+            
+            for contract_key, data in self.market_data.items():
+                strike = data['strike']
+                right = data['right']
+                tree_item = data.get('tree_item')
+                
+                if tree_item and self.option_tree.exists(tree_item):
+                    if strike not in strikes_to_update:
+                        strikes_to_update[strike] = {
+                            'tree_item': tree_item,
+                            'call': None,
+                            'put': None
+                        }
+                    
+                    if right == 'C':
+                        strikes_to_update[strike]['call'] = data
+                    else:
+                        strikes_to_update[strike]['put'] = data
+            
+            # Update each row with complete call/put data
+            for strike, strike_data in strikes_to_update.items():
+                call_data = strike_data['call']
+                put_data = strike_data['put']
+                tree_item = strike_data['tree_item']
+                
+                # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
+                values = [
+                    # Call columns (left side)
+                    safe_format(call_data['bid'] if call_data else None, ".2f"),
+                    safe_format(call_data['ask'] if call_data else None, ".2f"),
+                    safe_format(call_data['last'] if call_data else None, ".2f"),
+                    safe_format(call_data['volume'] if call_data else None, "int"),
+                    safe_format(call_data['gamma'] if call_data else None, ".4f"),
+                    safe_format(call_data['vega'] if call_data else None, ".4f"),
+                    safe_format(call_data['theta'] if call_data else None, ".4f"),
+                    safe_format(call_data['delta'] if call_data else None, ".4f"),
+                    safe_format(call_data.get('iv', 0) if call_data else None, ".2f"),
+                    
+                    # Strike (center)
+                    f"{strike:.2f}",
+                    
+                    # Put columns (right side)
+                    safe_format(put_data['delta'] if put_data else None, ".4f"),
+                    safe_format(put_data['theta'] if put_data else None, ".4f"),
+                    safe_format(put_data['vega'] if put_data else None, ".4f"),
+                    safe_format(put_data['gamma'] if put_data else None, ".4f"),
+                    safe_format(put_data['volume'] if put_data else None, "int"),
+                    safe_format(put_data['last'] if put_data else None, ".2f"),
+                    safe_format(put_data['ask'] if put_data else None, ".2f"),
+                    safe_format(put_data['bid'] if put_data else None, ".2f"),
+                ]
+                
+                # Determine ITM/OTM/ATM status for color coding
+                tags = []
+                if self.spx_price > 0:
+                    # Tolerance for ATM (within 0.5% of SPX price)
+                    atm_tolerance = self.spx_price * 0.005
+                    
+                    if abs(strike - self.spx_price) <= atm_tolerance:
+                        tags.append("atm")
+                    elif strike < self.spx_price:
+                        # Calls ITM when strike < spot, Puts OTM
+                        tags.append("call_itm")
+                    else:
+                        # Calls OTM when strike > spot, Puts ITM
+                        tags.append("put_itm")
+                
+                self.option_tree.item(tree_item, values=values, tags=tags)
+            
+            # Schedule next update
+            self.root.after(500, self.update_option_chain_display)
+            
+        except Exception as e:
+            self.log_message(f"Error updating option chain display: {e}", "ERROR")
+            # Continue updating even if there was an error
+            self.root.after(500, self.update_option_chain_display)
     
     # ========================================================================
     # TRADING LOGIC
@@ -1322,8 +1815,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'entryTime': datetime.now()
             }
             
-            # Start tracking historical data for supertrend
-            self.request_historical_data(contract_key)
+            # Position tracking initialized
+            # Historical data will be requested when chart is clicked
         else:
             # Update existing position
             pos = self.positions[contract_key]
@@ -1353,19 +1846,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             pos['currentPrice'] = current_price
             pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
     
-    def request_historical_data(self, contract_key: str):
-        """Request historical data for supertrend calculation"""
-        data = self.market_data[contract_key]
-        contract = data['contract']
-        
-        req_id = self.next_req_id
-        self.next_req_id += 1
-        
-        self.historical_data_requests[req_id] = contract_key
-        
-        # Request 1-minute bars for last hour
-        self.reqHistoricalData(req_id, contract, "", "1 D", "1 min", 
-                              "TRADES", 1, 1, False, [])
+    def request_historical_data_for_supertrend(self, contract_key: str):
+        """Request historical data for supertrend calculation - DEPRECATED"""
+        # This method is deprecated - use request_historical_data instead
+        pass
     
     def calculate_supertrend(self, contract_key: str):
         """Calculate supertrend indicator"""
@@ -1457,35 +1941,429 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.place_limit_order(contract, "SELL", quantity, current_bid)
     
     def update_chart(self, contract_key: str):
-        """Update the matplotlib chart with supertrend"""
-        if contract_key not in self.supertrend_data:
+        """Update the matplotlib chart with supertrend - DEPRECATED, kept for compatibility"""
+        # This method is no longer used - charts are now updated via update_call_chart and update_put_chart
+        pass
+    
+    def on_option_chain_click(self, event):
+        """Handle click on option chain to update charts"""
+        try:
+            selection = self.option_tree.selection()
+            if not selection:
+                self.log_message("No row selected in option chain", "WARNING")
+                return
+                
+            item = selection[0]
+            values = self.option_tree.item(item, 'values')
+            
+            if not values or len(values) < 10:
+                self.log_message("Invalid row data in option chain", "WARNING")
+                return
+            
+            # Get strike from center column (index 9) - convert to int to match contract keys
+            strike = int(float(values[9]))
+            
+            # Determine if user clicked on call or put side based on column
+            region = self.option_tree.identify_region(event.x, event.y)
+            column = self.option_tree.identify_column(event.x)
+            
+            self.log_message(f"Clicked: region={region}, column={column}, strike={strike}", "INFO")
+            
+            if region == "cell":
+                col_index = int(column.replace('#', '')) - 1
+                
+                # Columns 0-8 are calls, 9 is strike, 10-17 are puts
+                if col_index < 9:
+                    # Clicked on call side
+                    contract_key = f"SPX_{strike}_C"
+                    self.log_message(f"Looking for call contract: {contract_key}", "INFO")
+                    
+                    if contract_key in self.market_data:
+                        self.selected_call_contract = self.market_data[contract_key]['contract']
+                        self.log_message(f"✓ Selected CALL: Strike {strike} - Requesting chart data...", "SUCCESS")
+                        self.update_call_chart()
+                    else:
+                        self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
+                        self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
+                        
+                elif col_index > 9:
+                    # Clicked on put side
+                    contract_key = f"SPX_{strike}_P"
+                    self.log_message(f"Looking for put contract: {contract_key}", "INFO")
+                    
+                    if contract_key in self.market_data:
+                        self.selected_put_contract = self.market_data[contract_key]['contract']
+                        self.log_message(f"✓ Selected PUT: Strike {strike} - Requesting chart data...", "SUCCESS")
+                        self.update_put_chart()
+                    else:
+                        self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
+                        self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
+                else:
+                    self.log_message("Clicked on strike column - please click on call or put columns", "INFO")
+                        
+        except Exception as e:
+            self.log_message(f"Error handling option chain click: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+    
+    def show_call_loading(self):
+        """Show loading spinner on call chart with animated rotation"""
+        if self.root:
+            # Place the loading frame over the chart
+            self.call_loading_frame.place(relx=0.5, rely=0.5, anchor=CENTER, relwidth=0.5, relheight=0.3)
+            self.animate_call_spinner()
+            
+            # Set 30-second timeout
+            if self.call_loading_timeout_id:
+                self.root.after_cancel(self.call_loading_timeout_id)
+            self.call_loading_timeout_id = self.root.after(30000, self.call_loading_timeout)
+    
+    def hide_call_loading(self):
+        """Hide loading spinner on call chart"""
+        if self.root:
+            self.call_loading_frame.place_forget()
+            if self.call_loading_timeout_id:
+                self.root.after_cancel(self.call_loading_timeout_id)
+                self.call_loading_timeout_id = None
+    
+    def animate_call_spinner(self):
+        """Animate the call chart loading spinner"""
+        if self.call_loading_frame.winfo_ismapped():
+            current_text = self.call_loading_label.cget("text")
+            # Rotate through different spinner states
+            if "⟳" in current_text:
+                new_text = current_text.replace("⟳", "⟲")
+            else:
+                new_text = current_text.replace("⟲", "⟳")
+            self.call_loading_label.config(text=new_text)
+            if self.root:
+                self.root.after(500, self.animate_call_spinner)
+    
+    def call_loading_timeout(self):
+        """Handle call chart loading timeout"""
+        self.hide_call_loading()
+        self.log_message("Call chart failed to load data within 30 seconds", "WARNING")
+    
+    def show_put_loading(self):
+        """Show loading spinner on put chart with animated rotation"""
+        if self.root:
+            # Place the loading frame over the chart
+            self.put_loading_frame.place(relx=0.5, rely=0.5, anchor=CENTER, relwidth=0.5, relheight=0.3)
+            self.animate_put_spinner()
+            
+            # Set 30-second timeout
+            if self.put_loading_timeout_id:
+                self.root.after_cancel(self.put_loading_timeout_id)
+            self.put_loading_timeout_id = self.root.after(30000, self.put_loading_timeout)
+    
+    def hide_put_loading(self):
+        """Hide loading spinner on put chart"""
+        if self.root:
+            self.put_loading_frame.place_forget()
+            if self.put_loading_timeout_id:
+                self.root.after_cancel(self.put_loading_timeout_id)
+                self.put_loading_timeout_id = None
+    
+    def animate_put_spinner(self):
+        """Animate the put chart loading spinner"""
+        if self.put_loading_frame.winfo_ismapped():
+            current_text = self.put_loading_label.cget("text")
+            # Rotate through different spinner states
+            if "⟳" in current_text:
+                new_text = current_text.replace("⟳", "⟲")
+            else:
+                new_text = current_text.replace("⟲", "⟳")
+            self.put_loading_label.config(text=new_text)
+            if self.root:
+                self.root.after(500, self.animate_put_spinner)
+    
+    def put_loading_timeout(self):
+        """Handle put chart loading timeout"""
+        self.hide_put_loading()
+        self.log_message("Put chart failed to load data within 30 seconds", "WARNING")
+    
+    def on_call_settings_changed(self):
+        """Handle call chart settings change - clear data and refresh"""
+        if self.selected_call_contract:
+            contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}"
+            # Clear historical data to force re-request with new settings
+            if contract_key in self.historical_data:
+                del self.historical_data[contract_key]
+        self.update_call_chart()
+    
+    def on_put_settings_changed(self):
+        """Handle put chart settings change - clear data and refresh"""
+        if self.selected_put_contract:
+            contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}"
+            # Clear historical data to force re-request with new settings
+            if contract_key in self.historical_data:
+                del self.historical_data[contract_key]
+        self.update_put_chart()
+    
+    def update_call_chart(self):
+        """
+        Update the call candlestick chart for selected contract.
+        Uses debouncing to prevent rapid successive updates for better responsiveness.
+        """
+        if not self.root:
+            return
+            
+        # Cancel any pending update
+        if self.call_chart_update_pending:
+            self.root.after_cancel(self.call_chart_update_pending)
+            self.call_chart_update_pending = None
+        
+        # Schedule debounced update
+        self.call_chart_update_pending = self.root.after(
+            self.chart_debounce_delay, 
+            self._update_call_chart_immediate
+        )
+    
+    def _update_call_chart_immediate(self):
+        """Immediate chart update (called after debounce delay)"""
+        self.call_chart_update_pending = None
+        
+        if not self.selected_call_contract:
             return
         
-        df = self.supertrend_data[contract_key]
+        contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}"
         
-        self.ax.clear()
+        # Request historical data if not already requested or if settings changed
+        if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
+            self.log_message(f"Requesting {self.call_days_var.get()}D historical data for {contract_key}...", "INFO")
+            self.show_call_loading()  # Show loading spinner
+            self.request_historical_data(self.selected_call_contract, contract_key, 'call')
+            return
         
-        # Plot price
-        self.ax.plot(df['close'], label='Price', color='#E0E0E0', linewidth=2)
+        # Draw candlestick chart (suppress repetitive log)
+        self.hide_call_loading()  # Hide loading spinner when data is available
+        self.draw_candlestick_chart(self.call_ax, self.call_canvas, contract_key, "Call")
+    
+    def update_put_chart(self):
+        """
+        Update the put candlestick chart for selected contract.
+        Uses debouncing to prevent rapid successive updates for better responsiveness.
+        """
+        if not self.root:
+            return
+            
+        # Cancel any pending update
+        if self.put_chart_update_pending:
+            self.root.after_cancel(self.put_chart_update_pending)
+            self.put_chart_update_pending = None
         
-        # Plot supertrend
-        self.ax.plot(df['supertrend'], label='Supertrend', color='#FF8C00', linewidth=2)
+        # Schedule debounced update
+        self.put_chart_update_pending = self.root.after(
+            self.chart_debounce_delay, 
+            self._update_put_chart_immediate
+        )
+    
+    def _update_put_chart_immediate(self):
+        """Immediate chart update (called after debounce delay)"""
+        self.put_chart_update_pending = None
         
-        # Fill between
-        self.ax.fill_between(range(len(df)), df['close'], df['supertrend'],
-                            where=df['close'] > df['supertrend'], 
-                            alpha=0.3, color='#44FF44', label='Long')
-        self.ax.fill_between(range(len(df)), df['close'], df['supertrend'],
-                            where=df['close'] <= df['supertrend'], 
-                            alpha=0.3, color='#FF4444', label='Short')
+        if not self.selected_put_contract:
+            return
         
-        self.ax.set_title(f'Supertrend: {contract_key}', color='#E0E0E0')
-        self.ax.set_xlabel('Time', color='#E0E0E0')
-        self.ax.set_ylabel('Price', color='#E0E0E0')
-        self.ax.legend(facecolor='#181818', edgecolor='#FF8C00', labelcolor='#E0E0E0')
-        self.ax.grid(True, alpha=0.2, color='#FF8C00')
+        contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}"
         
-        self.canvas.draw()
+        # Request historical data if not already requested or if settings changed
+        if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
+            self.log_message(f"Requesting {self.put_days_var.get()}D historical data for {contract_key}...", "INFO")
+            self.show_put_loading()  # Show loading spinner
+            self.request_historical_data(self.selected_put_contract, contract_key, 'put')
+            return
+        
+        # Draw candlestick chart (suppress repetitive log)
+        self.hide_put_loading()  # Hide loading spinner when data is available
+        self.draw_candlestick_chart(self.put_ax, self.put_canvas, contract_key, "Put")
+    
+    def request_historical_data(self, contract, contract_key, option_type):
+        """Request historical bar data for charting"""
+        if self.connection_state != ConnectionState.CONNECTED:
+            self.log_message("Cannot request historical data - not connected", "WARNING")
+            return
+        
+        req_id = self.next_req_id
+        self.next_req_id += 1
+        
+        self.historical_data_requests[req_id] = contract_key
+        
+        # Map timeframe to bar size
+        timeframe = self.call_timeframe_var.get() if option_type == 'call' else self.put_timeframe_var.get()
+        bar_size_map = {
+            "1 min": "1 min",
+            "5 min": "5 mins",
+            "15 min": "15 mins",
+            "30 min": "30 mins",
+            "1 hour": "1 hour"
+        }
+        bar_size = bar_size_map.get(timeframe, "1 min")
+        
+        # Get days back from selector
+        days_back = int(self.call_days_var.get() if option_type == 'call' else self.put_days_var.get())
+        duration = f"{days_back} D"  # Days in format "5 D"
+        
+        try:
+            # For options, we need to use different parameters
+            # Paper trading may not have full historical data for options
+            self.reqHistoricalData(
+                req_id,
+                contract,
+                "",  # End date/time (empty = now)
+                duration,
+                bar_size,
+                "MIDPOINT",  # Use MIDPOINT for options (more reliable than TRADES)
+                0,  # Include extended hours (0 = all hours)
+                1,  # Format date as string
+                False,  # Keep up to date
+                []  # Chart options
+            )
+            
+            self.log_message(f"Historical data request sent (reqId: {req_id})", "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error requesting historical data: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+    
+    def draw_candlestick_chart(self, ax, canvas, contract_key, chart_type):
+        """
+        Draw professional candlestick chart with mid-price using optimized rendering.
+        Uses efficient data structures and minimal redraws for TradingView-like responsiveness.
+        """
+        try:
+            # Clear previous artists efficiently
+            ax.clear()
+            
+            # Check if we have historical data
+            if contract_key not in self.historical_data or len(self.historical_data[contract_key]) < 2:
+                # FALLBACK: Display current market data instead
+                strike = contract_key.split('_')[1]
+                
+                if contract_key in self.market_data:
+                    md = self.market_data[contract_key]
+                    bid = md.get('bid', 0)
+                    ask = md.get('ask', 0)
+                    last = md.get('last', 0)
+                    
+                    # Display text information
+                    ax.text(0.5, 0.6, f"{chart_type} Option - Strike {strike}", 
+                           ha='center', va='center', fontsize=12, color='#E0E0E0',
+                           transform=ax.transAxes, weight='bold')
+                    
+                    ax.text(0.5, 0.45, f"Bid: ${bid:.2f}  |  Ask: ${ask:.2f}  |  Last: ${last:.2f}", 
+                           ha='center', va='center', fontsize=10, color='#FF8C00',
+                           transform=ax.transAxes)
+                    
+                    ax.text(0.5, 0.3, "Historical data unavailable", 
+                           ha='center', va='center', fontsize=9, color='#888888',
+                           transform=ax.transAxes, style='italic')
+                    
+                    ax.text(0.5, 0.2, "(Paper trading accounts have limited historical data access)", 
+                           ha='center', va='center', fontsize=8, color='#666666',
+                           transform=ax.transAxes, style='italic')
+                else:
+                    ax.text(0.5, 0.5, f"{chart_type} Option - Strike {strike}\n\nNo market data available", 
+                           ha='center', va='center', fontsize=11, color='#888888',
+                           transform=ax.transAxes)
+                
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.axis('off')
+                canvas.draw()
+                return
+            
+            # OPTIMIZATION 1: Use numpy for fast array operations
+            data = self.historical_data[contract_key]
+            n_bars = len(data)
+            
+            # Pre-allocate numpy arrays for better performance
+            indices = np.arange(n_bars)
+            opens = np.array([bar['open'] for bar in data])
+            highs = np.array([bar['high'] for bar in data])
+            lows = np.array([bar['low'] for bar in data])
+            closes = np.array([bar['close'] for bar in data])
+            dates = [bar['date'] for bar in data]
+            
+            # Calculate mid prices using numpy (faster than list comprehension)
+            mids = (highs + lows) / 2
+            
+            # OPTIMIZATION 2: Vectorized color determination
+            is_bullish = closes >= opens
+            
+            # OPTIMIZATION 3: Draw candlesticks in batches instead of individually
+            # Separate bullish and bearish candles for batch drawing
+            bullish_indices = indices[is_bullish]
+            bearish_indices = indices[~is_bullish]
+            
+            # Draw high-low lines in batches
+            for idx_arr, color in [(bullish_indices, '#44FF44'), (bearish_indices, '#FF4444')]:
+                if len(idx_arr) > 0:
+                    for i in idx_arr:
+                        i_scalar = int(i)  # Convert numpy int to Python int
+                        ax.plot([i_scalar, i_scalar], [float(lows[i]), float(highs[i])], 
+                               color=color, linewidth=1, solid_capstyle='butt', antialiased=True)
+            
+            # Draw bodies using collections for better performance
+            for idx_arr, color in [(bullish_indices, '#44FF44'), (bearish_indices, '#FF4444')]:
+                if len(idx_arr) > 0:
+                    for i in idx_arr:
+                        i_scalar = int(i)  # Convert numpy int to Python int
+                        body_height = float(abs(closes[i] - opens[i]))
+                        body_bottom = float(min(opens[i], closes[i]))
+                        rect = Rectangle((i_scalar - 0.3, body_bottom), 0.6, body_height, 
+                                       facecolor=color, edgecolor=color, linewidth=0.5)
+                        ax.add_patch(rect)
+            
+            # OPTIMIZATION 4: Plot mid-price line once (vectorized)
+            ax.plot(indices, mids, color='#FF8C00', linewidth=1.5, 
+                   label='Mid Price', alpha=0.7, antialiased=True, zorder=10)
+            
+            # OPTIMIZATION 5: Efficient styling - set all at once
+            strike = contract_key.split('_')[1]
+            ax.set_title(f"{chart_type} Chart - Strike {strike}", 
+                        color='#E0E0E0', fontsize=10, pad=5)
+            ax.set_xlabel('Time', color='#E0E0E0', fontsize=8)
+            ax.set_ylabel('Price', color='#E0E0E0', fontsize=8)
+            ax.grid(True, alpha=0.2, color='#444444', linewidth=0.5, linestyle='-')
+            
+            # Legend with minimal overhead
+            ax.legend(facecolor='#181818', edgecolor='#FF8C00', 
+                     labelcolor='#E0E0E0', fontsize=8, loc='best', framealpha=0.9)
+            
+            # OPTIMIZATION 6: Smart x-axis labeling - show fewer ticks for large datasets
+            if n_bars > 0:
+                # Adaptive tick spacing based on data size
+                tick_spacing = max(1, n_bars // 15)  # Show ~15 ticks maximum
+                xtick_positions = list(range(0, n_bars, tick_spacing))
+                
+                # Ensure we include the last point
+                if xtick_positions[-1] != n_bars - 1:
+                    xtick_positions.append(n_bars - 1)
+                
+                # Extract time from date strings efficiently
+                xtick_labels = [dates[i].split()[1] if ' ' in dates[i] else dates[i] 
+                               for i in xtick_positions]
+                
+                ax.set_xticks(xtick_positions)
+                ax.set_xticklabels(xtick_labels, rotation=45, ha='right', fontsize=7)
+            
+            # Set reasonable limits to avoid auto-scaling overhead
+            ax.set_xlim(-0.5, n_bars - 0.5)
+            y_min, y_max = np.min(lows), np.max(highs)
+            y_padding = (y_max - y_min) * 0.05  # 5% padding
+            ax.set_ylim(y_min - y_padding, y_max + y_padding)
+            
+            # OPTIMIZATION 7: Use draw_idle() for non-blocking updates
+            # This queues the redraw instead of blocking immediately
+            canvas.draw_idle()
+            
+            # OPTIMIZATION 8: No auto-refresh - let users manually refresh for better responsiveness
+            # Remove automatic chart updates that cause sluggishness
+            
+        except Exception as e:
+            self.log_message(f"Error drawing {chart_type} chart: {e}", "ERROR")
     
     # ========================================================================
     # GUI UPDATES
