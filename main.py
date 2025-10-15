@@ -477,25 +477,50 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         main_canvas.configure(yscrollcommand=main_vsb.set, xscrollcommand=main_hsb.set)
         main_canvas_window = main_canvas.create_window((0, 0), window=main_container, anchor="nw")
         
-        # Update scroll region when container size changes
-        def configure_scroll_region(event=None):
-            main_canvas.configure(scrollregion=main_canvas.bbox("all"))
-            # Also resize the canvas window to match canvas width for proper horizontal layout
-            canvas_width = main_canvas.winfo_width()
-            if canvas_width > 1:
-                main_canvas.itemconfig(main_canvas_window, width=canvas_width)
+        # Debounced resize handling for smooth, responsive UI during window resizing
+        # This prevents sluggishness by batching resize operations
+        self.resize_debounce_id = None
+        self.last_canvas_width = 0
         
-        main_container.bind("<Configure>", configure_scroll_region)
-        main_canvas.bind("<Configure>", configure_scroll_region)
+        def configure_scroll_region_immediate():
+            """Immediate scroll region update (called after debounce delay)"""
+            try:
+                main_canvas.configure(scrollregion=main_canvas.bbox("all"))
+                canvas_width = main_canvas.winfo_width()
+                if canvas_width > 1 and canvas_width != self.last_canvas_width:
+                    main_canvas.itemconfig(main_canvas_window, width=canvas_width)
+                    self.last_canvas_width = canvas_width
+            except:
+                pass  # Ignore errors during resize
+        
+        def configure_scroll_region_debounced(event=None):
+            """Debounced scroll region update - prevents resize sluggishness"""
+            if not self.root:
+                return
+            
+            # Cancel pending resize operation
+            if self.resize_debounce_id:
+                self.root.after_cancel(self.resize_debounce_id)
+            
+            # Schedule new resize operation after 50ms delay
+            # This batches multiple rapid resize events into a single update
+            self.resize_debounce_id = self.root.after(50, configure_scroll_region_immediate)
+        
+        # Bind debounced resize handler
+        main_container.bind("<Configure>", configure_scroll_region_debounced)
+        main_canvas.bind("<Configure>", configure_scroll_region_debounced)
         
         # Pack scrollbars and canvas
         main_vsb.pack(side=RIGHT, fill=Y)
         main_hsb.pack(side=BOTTOM, fill=X)
         main_canvas.pack(side=LEFT, fill=BOTH, expand=YES)
         
-        # Enable mousewheel scrolling
+        # Enable mousewheel scrolling with optimized event handling
         def on_mousewheel(event):
-            main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            # Only scroll if canvas is actually scrollable
+            if main_canvas.yview() != (0.0, 1.0):
+                main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"  # Prevent event propagation for better performance
         
         main_canvas.bind_all("<MouseWheel>", on_mousewheel)
         
