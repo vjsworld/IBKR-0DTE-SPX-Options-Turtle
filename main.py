@@ -269,6 +269,14 @@ class IBKRWrapper(EWrapper):
                 f"Position update: {contract_key} - Qty: {position} @ ${avgCost:.2f}",
                 "INFO"
             )
+        else:
+            # Position closed - remove from tracking
+            if contract_key in self.app.positions:
+                del self.app.positions[contract_key]
+                self.app.log_message(
+                    f"Position closed: {contract_key}",
+                    "INFO"
+                )
     
     def positionEnd(self):
         """Called when initial position data is complete"""
@@ -810,8 +818,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         pos_vsb = ttk.Scrollbar(pos_frame, orient="vertical")
         pos_vsb.pack(side=RIGHT, fill=Y)
         
-        # Added "Action" column for Close button
-        pos_columns = ("Contract", "Qty", "Avg Cost", "Last", "PnL", "PnL%", "Action")
+        # Position columns with Action for Close button
+        pos_columns = ("Contract", "Qty", "Entry", "Mid", "PnL", "PnL%", "Action")
         self.position_tree = ttk.Treeview(pos_frame, columns=pos_columns,
                                          show="headings", height=6,
                                          yscrollcommand=pos_vsb.set)
@@ -820,11 +828,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         for col in pos_columns:
             self.position_tree.heading(col, text=col)
             if col == "Action":
-                self.position_tree.column(col, width=70, anchor=CENTER)
+                self.position_tree.column(col, width=60, anchor=CENTER)
+            elif col in ["Entry", "Mid"]:
+                self.position_tree.column(col, width=80, anchor=CENTER)
             else:
                 self.position_tree.column(col, width=100, anchor=CENTER)
         
         self.position_tree.pack(fill=BOTH, expand=YES)
+        
+        # Configure tags for row styling
+        self.position_tree.tag_configure('normal_row', foreground='#FFFFFF')  # White text for all columns
+        self.position_tree.tag_configure('close_btn', foreground='#FF4444')   # Red text for Close column
         
         # Bind click event for Close button in Action column
         self.position_tree.bind('<ButtonRelease-1>', self.on_position_tree_click)
@@ -2134,12 +2148,28 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.update_positions_display()
     
-    def update_position_pnl(self, contract_key: str, current_price: float):
-        """Update position PnL with current price"""
+    def update_position_pnl(self, contract_key: str, current_price: float | None = None):
+        """
+        Update position PnL with current mid-price
+        If current_price not provided, calculate from bid/ask
+        """
         if contract_key in self.positions:
             pos = self.positions[contract_key]
-            pos['currentPrice'] = current_price
-            pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
+            
+            # Get current mid-price from market data
+            if current_price is None and contract_key in self.market_data:
+                data = self.market_data[contract_key]
+                bid = data.get('bid', 0)
+                ask = data.get('ask', 0)
+                if bid > 0 and ask > 0:
+                    current_price = (bid + ask) / 2
+                else:
+                    current_price = data.get('last', pos['avgCost'])
+            
+            if current_price:
+                pos['currentPrice'] = current_price
+                # P&L = (Current - Entry) × Quantity × Multiplier
+                pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
     
     # ========================================================================
     # MANUAL TRADING MODE - Implementation
@@ -3090,29 +3120,51 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         """Update the positions treeview"""
         if not self.root:
             return
-        # Clear existing items
+        
+        # Get existing items to avoid duplicates
+        existing_items = {}
         for item in self.position_tree.get_children():
-            self.position_tree.delete(item)
+            values = self.position_tree.item(item)['values']
+            if values:
+                existing_items[values[0]] = item  # contract_key -> item_id
         
         total_pnl = 0
+        current_keys = set()
         
-        # Add current positions
+        # Add or update current positions
         for contract_key, pos in self.positions.items():
+            current_keys.add(contract_key)
+            
+            # Update P&L with current mid-price
+            self.update_position_pnl(contract_key)
+            
             pnl = pos['pnl']
             pnl_pct = (pos['currentPrice'] / pos['avgCost'] - 1) * 100 if pos['avgCost'] > 0 else 0
             
+            # Format values (showing option prices, not dollar amounts)
             values = (
                 contract_key,
                 pos['position'],
-                f"${pos['avgCost']:.2f}",
-                f"${pos['currentPrice']:.2f}",
-                f"${pnl:.2f}",
+                f"${pos['avgCost']:.2f}",      # Entry price per option
+                f"${pos['currentPrice']:.2f}",  # Current mid-price per option
+                f"${pnl:.2f}",                  # Total P&L (includes 100x multiplier)
                 f"{pnl_pct:.2f}%",
-                "[Close]"  # Action button
+                "✕"  # Close button - red X symbol
             )
             
-            self.position_tree.insert("", tk.END, values=values)
+            if contract_key in existing_items:
+                # Update existing row with white text
+                self.position_tree.item(existing_items[contract_key], values=values, tags=('normal_row',))
+            else:
+                # Insert new row with white text
+                self.position_tree.insert("", tk.END, values=values, tags=('normal_row',))
+            
             total_pnl += pnl
+        
+        # Remove stale positions (no longer in self.positions)
+        for contract_key, item_id in existing_items.items():
+            if contract_key not in current_keys:
+                self.position_tree.delete(item_id)
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"
