@@ -253,7 +253,7 @@ class IBKRWrapper(EWrapper):
     
     def position(self, account: str, contract: Contract, position: float,
                 avgCost: float):
-        """Receives position updates"""
+        """Receives position updates from IBKR"""
         contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
         
         if position != 0:
@@ -265,6 +265,39 @@ class IBKRWrapper(EWrapper):
                 'pnl': 0,
                 'entryTime': datetime.now()
             }
+            self.app.log_message(
+                f"Position update: {contract_key} - Qty: {position} @ ${avgCost:.2f}",
+                "INFO"
+            )
+        else:
+            # Position closed - remove from tracking
+            if contract_key in self.app.positions:
+                del self.app.positions[contract_key]
+                self.app.log_message(
+                    f"Position closed: {contract_key}",
+                    "INFO"
+                )
+    
+    def positionEnd(self):
+        """Called when initial position data is complete"""
+        self.app.log_message(
+            f"Position subscription complete - {len(self.app.positions)} position(s)",
+            "INFO"
+        )
+        self.app.update_positions_display()
+    
+    def execDetails(self, reqId: int, contract: Contract, execution):
+        """Receives execution details - recommended by IBKR for comprehensive monitoring"""
+        contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
+        self.app.log_message(
+            f"Execution: Order #{execution.orderId} - {contract_key} "
+            f"{execution.side} {execution.shares} @ ${execution.price:.2f}",
+            "SUCCESS"
+        )
+    
+    def execDetailsEnd(self, reqId: int):
+        """Called when execution details request is complete"""
+        pass
     
     def historicalData(self, reqId: int, bar):
         """Receives historical bar data"""
@@ -305,11 +338,13 @@ class IBKRWrapper(EWrapper):
                 )
             
             # Update the appropriate chart based on contract type
-            if self.app.selected_call_contract and contract_key == f"SPX_{self.app.selected_call_contract.strike}_C":
+            # Check if this data is for the currently selected call contract (with expiration)
+            if self.app.selected_call_contract and contract_key == f"SPX_{self.app.selected_call_contract.strike}_C_{self.app.current_expiry}":
                 self.app.log_message("Updating call chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_call_chart)
-            elif self.app.selected_put_contract and contract_key == f"SPX_{self.app.selected_put_contract.strike}_P":
+            # Check if this data is for the currently selected put contract (with expiration)
+            elif self.app.selected_put_contract and contract_key == f"SPX_{self.app.selected_put_contract.strike}_P_{self.app.current_expiry}":
                 self.app.log_message("Updating put chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_put_chart)
@@ -377,6 +412,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.positions = {}
         self.order_status = {}
         self.pending_orders = {}  # orderId -> (contract_key, action, quantity)
+        
+        # ========================================================================
+        # MANUAL TRADING MODE - Order Management System
+        # ========================================================================
+        # Tracks manual orders with intelligent mid-price chasing until filled
+        # - Orders placed at mid-price with proper SPX rounding ($3+ = $0.10, <$3 = $0.05)
+        # - Auto-adjusts limit price as market moves to ensure fills
+        # - Monitors all open orders and updates UI in real-time
+        self.manual_orders = {}  # orderId -> {contract, action, quantity, initial_mid, last_mid, attempts, timestamp}
+        self.manual_order_update_interval = 1000  # Check/update orders every 1 second
+        self.manual_order_max_price_deviation = 0.25  # Max $0.25 deviation before re-pricing
         
         # SPX underlying price tracking
         self.spx_price = 0.0
@@ -772,7 +818,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         pos_vsb = ttk.Scrollbar(pos_frame, orient="vertical")
         pos_vsb.pack(side=RIGHT, fill=Y)
         
-        pos_columns = ("Contract", "Qty", "Avg Cost", "Last", "PnL", "PnL%")
+        # Position columns with Action for Close button
+        pos_columns = ("Contract", "Qty", "Entry", "Mid", "PnL", "PnL%", "Action")
         self.position_tree = ttk.Treeview(pos_frame, columns=pos_columns,
                                          show="headings", height=6,
                                          yscrollcommand=pos_vsb.set)
@@ -780,9 +827,21 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         for col in pos_columns:
             self.position_tree.heading(col, text=col)
-            self.position_tree.column(col, width=100, anchor=CENTER)
+            if col == "Action":
+                self.position_tree.column(col, width=60, anchor=CENTER)
+            elif col in ["Entry", "Mid"]:
+                self.position_tree.column(col, width=80, anchor=CENTER)
+            else:
+                self.position_tree.column(col, width=100, anchor=CENTER)
         
         self.position_tree.pack(fill=BOTH, expand=YES)
+        
+        # Configure tags for row styling
+        self.position_tree.tag_configure('normal_row', foreground='#FFFFFF')  # White text for all columns
+        self.position_tree.tag_configure('close_btn', foreground='#FF4444')   # Red text for Close column
+        
+        # Bind click event for Close button in Action column
+        self.position_tree.bind('<ButtonRelease-1>', self.on_position_tree_click)
         
         # Orders section (right side)
         order_container = ttk.Frame(pos_order_frame)
@@ -931,6 +990,62 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         put_toolbar = NavigationToolbar2Tk(self.put_canvas, put_chart_frame)
         put_toolbar.update()
         put_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # ========================================================================
+        # MANUAL TRADING PANEL - Quick Entry/Exit Controls
+        # ========================================================================
+        # Provides one-click trading with risk-based position sizing
+        # - Buy button: Enters call option at specified max risk
+        # - Sell button: Enters put option at specified max risk
+        # - Auto-finds closest strike to risk limit without exceeding it
+        # - Orders placed at mid-price with intelligent price chasing
+        # ========================================================================
+        
+        manual_trade_frame = ttk.Frame(bottom_frame)
+        manual_trade_frame.pack(fill=X, padx=5, pady=(10, 5))
+        
+        # Header
+        manual_label = ttk.Label(manual_trade_frame, text="Manual Trading Mode", 
+                                 font=("Arial", 12, "bold"))
+        manual_label.pack(fill=X, pady=(0, 5))
+        
+        # Controls container
+        manual_controls = ttk.Frame(manual_trade_frame)
+        manual_controls.pack(fill=X)
+        
+        # Left side: Entry buttons
+        entry_frame = ttk.Frame(manual_controls)
+        entry_frame.pack(side=LEFT, padx=(0, 20))
+        
+        ttk.Label(entry_frame, text="Quick Entry:", 
+                  font=("Arial", 10, "bold")).pack(side=LEFT, padx=(0, 10))
+        
+        # Buy Call button (Green)
+        self.buy_button = ttk.Button(entry_frame, text="BUY CALL", 
+                                      command=self.manual_buy_call,
+                                      style='success.TButton', width=12)
+        self.buy_button.pack(side=LEFT, padx=2)
+        
+        # Sell Put button (Red) - Note: "Sell" means buy a put option
+        self.sell_button = ttk.Button(entry_frame, text="BUY PUT", 
+                                       command=self.manual_buy_put,
+                                       style='danger.TButton', width=12)
+        self.sell_button.pack(side=LEFT, padx=2)
+        
+        # Right side: Risk input
+        risk_frame = ttk.Frame(manual_controls)
+        risk_frame.pack(side=LEFT)
+        
+        ttk.Label(risk_frame, text="Max Risk per Contract:", 
+                  font=("Arial", 10)).pack(side=LEFT, padx=(0, 5))
+        
+        self.max_risk_var = tk.StringVar(value="500")
+        self.max_risk_entry = ttk.Entry(risk_frame, textvariable=self.max_risk_var, 
+                                         width=10)
+        self.max_risk_entry.pack(side=LEFT, padx=2)
+        
+        ttk.Label(risk_frame, text="$ (e.g., $500 = $5.00 per contract)", 
+                  font=("Arial", 9), foreground="#888888").pack(side=LEFT, padx=5)
         
         # Row 3: Log section (now expandable to fill remaining space)
         log_label = ttk.Label(bottom_frame, text="Activity Log", 
@@ -1173,6 +1288,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.running = False
         
         try:
+            # Cancel position subscription before disconnecting
+            self.cancelPositions()
             EClient.disconnect(self)
         except Exception as e:
             self.log_message(f"Error during disconnect: {str(e)}", "WARNING")
@@ -1241,6 +1358,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Initialize data subscriptions
         self.log_message("Requesting account updates...", "INFO")
         self.reqAccountUpdates(True, "")
+        
+        # Request position updates (sync with TWS)
+        self.log_message("Requesting position updates...", "INFO")
+        self.reqPositions()
         
         # Subscribe to SPX underlying price
         self.log_message("Subscribing to SPX underlying price...", "INFO")
@@ -2027,12 +2148,424 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.update_positions_display()
     
-    def update_position_pnl(self, contract_key: str, current_price: float):
-        """Update position PnL with current price"""
+    def update_position_pnl(self, contract_key: str, current_price: float | None = None):
+        """
+        Update position PnL with current mid-price
+        If current_price not provided, calculate from bid/ask
+        """
         if contract_key in self.positions:
             pos = self.positions[contract_key]
-            pos['currentPrice'] = current_price
-            pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
+            
+            # Get current mid-price from market data
+            if current_price is None and contract_key in self.market_data:
+                data = self.market_data[contract_key]
+                bid = data.get('bid', 0)
+                ask = data.get('ask', 0)
+                if bid > 0 and ask > 0:
+                    current_price = (bid + ask) / 2
+                else:
+                    current_price = data.get('last', pos['avgCost'])
+            
+            if current_price:
+                pos['currentPrice'] = current_price
+                # P&L = (Current - Entry) × Quantity × Multiplier
+                pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
+    
+    # ========================================================================
+    # MANUAL TRADING MODE - Implementation
+    # ========================================================================
+    # Intelligent order management system with mid-price chasing
+    # Based on IBKR best practices for retail options trading
+    # ========================================================================
+    
+    def round_to_spx_increment(self, price: float) -> float:
+        """
+        Round price to SPX options tick size:
+        - Prices >= $3.00: Round to nearest $0.10
+        - Prices < $3.00: Round to nearest $0.05
+        
+        Per CBOE SPX options rules and IBKR requirements
+        """
+        if price >= 3.00:
+            # Round to nearest $0.10
+            return round(price / 0.10) * 0.10
+        else:
+            # Round to nearest $0.05
+            return round(price / 0.05) * 0.05
+    
+    def calculate_mid_price(self, contract_key: str) -> float:
+        """
+        Calculate mid-price from current bid/ask with proper rounding
+        Returns 0 if no valid market data available
+        """
+        if contract_key not in self.market_data:
+            return 0.0
+        
+        data = self.market_data[contract_key]
+        bid = data.get('bid', 0)
+        ask = data.get('ask', 0)
+        
+        if bid <= 0 or ask <= 0:
+            return 0.0
+        
+        mid = (bid + ask) / 2.0
+        return self.round_to_spx_increment(mid)
+    
+    def find_option_by_max_risk(self, option_type: str, max_risk_dollars: float) -> Optional[Tuple[str, Contract, float]]:
+        """
+        Find option closest to max risk without exceeding it
+        
+        Args:
+            option_type: "C" for calls, "P" for puts
+            max_risk_dollars: Maximum risk in dollars (e.g., 500 for $5.00 per contract)
+        
+        Returns:
+            Tuple of (contract_key, contract, ask_price) or None if not found
+        """
+        try:
+            # Convert max risk to per-contract price ($500 = $5.00)
+            max_price = max_risk_dollars / 100.0
+            
+            best_option = None
+            best_price = 0.0
+            best_contract_key = None
+            
+            self.log_message(f"Scanning for {option_type} option with ask ≤ ${max_price:.2f}...", "INFO")
+            
+            for contract_key, data in self.market_data.items():
+                # Safely check if this is the right option type
+                if data.get('right') != option_type:
+                    continue
+                
+                ask = data.get('ask', 0)
+                
+                # Must have valid ask price
+                if ask <= 0 or ask > max_price:
+                    continue
+                
+                # Find the option closest to max price (maximum value without exceeding)
+                if ask > best_price:
+                    best_price = ask
+                    best_option = data.get('contract')
+                    best_contract_key = contract_key
+            
+            if best_option and best_contract_key:
+                self.log_message(
+                    f"✓ Found {option_type} option: {best_contract_key} @ ${best_price:.2f} "
+                    f"(Risk: ${best_price * 100:.2f})", 
+                    "SUCCESS"
+                )
+                return (best_contract_key, best_option, best_price)
+            else:
+                self.log_message(
+                    f"✗ No {option_type} options found with ask ≤ ${max_price:.2f}", 
+                    "WARNING"
+                )
+                return None
+        except Exception as e:
+            self.log_message(f"Error in find_option_by_max_risk: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return None
+    
+    def manual_buy_call(self):
+        """
+        Manual trading: Buy call option
+        Finds closest strike to max risk and places mid-price order with chasing
+        """
+        try:
+            if self.connection_state != ConnectionState.CONNECTED:
+                self.log_message("Cannot place order: Not connected to IBKR", "ERROR")
+                messagebox.showerror("Not Connected", "Please connect to IBKR before trading")
+                return
+            
+            try:
+                max_risk = float(self.max_risk_var.get())
+                if max_risk <= 0:
+                    raise ValueError("Max risk must be positive")
+            except ValueError as e:
+                self.log_message(f"Invalid max risk value: {e}", "ERROR")
+                messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                return
+            
+            self.log_message("=" * 60, "INFO")
+            self.log_message("MANUAL BUY CALL INITIATED", "SUCCESS")
+            
+            result = self.find_option_by_max_risk("C", max_risk)
+            if not result:
+                messagebox.showwarning("No Options Found", 
+                                        f"No call options found with risk ≤ ${max_risk:.2f}")
+                return
+            
+            contract_key, contract, ask_price = result
+            
+            # Calculate mid price for order
+            mid_price = self.calculate_mid_price(contract_key)
+            if mid_price == 0:
+                self.log_message("Cannot calculate mid price - using ask price", "WARNING")
+                mid_price = ask_price
+            
+            # Place order with mid-price chasing
+            self.place_manual_order(contract_key, contract, "BUY", 1, mid_price)
+            self.log_message("=" * 60, "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error in manual_buy_call: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            messagebox.showerror("Error", f"Failed to place call order: {e}")
+    
+    def manual_buy_put(self):
+        """
+        Manual trading: Buy put option
+        Finds closest strike to max risk and places mid-price order with chasing
+        """
+        try:
+            if self.connection_state != ConnectionState.CONNECTED:
+                self.log_message("Cannot place order: Not connected to IBKR", "ERROR")
+                messagebox.showerror("Not Connected", "Please connect to IBKR before trading")
+                return
+            
+            try:
+                max_risk = float(self.max_risk_var.get())
+                if max_risk <= 0:
+                    raise ValueError("Max risk must be positive")
+            except ValueError as e:
+                self.log_message(f"Invalid max risk value: {e}", "ERROR")
+                messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                return
+            
+            self.log_message("=" * 60, "INFO")
+            self.log_message("MANUAL BUY PUT INITIATED", "SUCCESS")
+            
+            result = self.find_option_by_max_risk("P", max_risk)
+            if not result:
+                messagebox.showwarning("No Options Found", 
+                                        f"No put options found with risk ≤ ${max_risk:.2f}")
+                return
+            
+            contract_key, contract, ask_price = result
+            
+            # Calculate mid price for order
+            mid_price = self.calculate_mid_price(contract_key)
+            if mid_price == 0:
+                self.log_message("Cannot calculate mid price - using ask price", "WARNING")
+                mid_price = ask_price
+            
+            # Place order with mid-price chasing
+            self.place_manual_order(contract_key, contract, "BUY", 1, mid_price)
+            self.log_message("=" * 60, "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error in manual_buy_put: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            messagebox.showerror("Error", f"Failed to place put order: {e}")
+    
+    def place_manual_order(self, contract_key: str, contract: Contract, 
+                           action: str, quantity: int, initial_price: float):
+        """
+        Place manual order with intelligent mid-price chasing
+        
+        Order Management Strategy:
+        1. Place limit order at mid-price (rounded to SPX increments)
+        2. Monitor order status and market movement every 1 second
+        3. If mid-price moves away and order unfilled, cancel and replace
+        4. Continue until filled or manually cancelled
+        
+        This implements IBKR best practices for retail options trading:
+        - Start passive (at mid) to get best execution
+        - Chase the market only when necessary
+        - Avoid aggressive market orders that give up edge
+        """
+        order = Order()
+        order.action = action
+        order.totalQuantity = quantity
+        order.orderType = "LMT"
+        order.lmtPrice = initial_price
+        order.tif = "DAY"
+        order.transmit = True
+        # Explicitly clear attributes not supported by IBKR
+        order.eTradeOnly = False
+        order.firmQuoteOnly = False
+        
+        order_id = self.next_order_id
+        self.next_order_id += 1
+        
+        # Track this manual order for price chasing
+        self.manual_orders[order_id] = {
+            'contract_key': contract_key,
+            'contract': contract,
+            'action': action,
+            'quantity': quantity,
+            'initial_mid': initial_price,
+            'last_mid': initial_price,
+            'attempts': 1,
+            'timestamp': datetime.now()
+        }
+        
+        self.placeOrder(order_id, contract, order)
+        self.pending_orders[order_id] = (contract_key, action, quantity)
+        
+        self.log_message(
+            f"Manual {action} order #{order_id}: {contract_key} x{quantity} @ ${initial_price:.2f} (mid-price)",
+            "SUCCESS"
+        )
+        
+        self.add_order_to_tree(order_id, contract, action, quantity, "Chasing Mid")
+        
+        # Start monitoring this order
+        if self.root:
+            self.root.after(self.manual_order_update_interval, self.update_manual_orders)
+    
+    def update_manual_orders(self):
+        """
+        Monitor all manual orders and chase mid-price when market moves
+        
+        Runs every 1 second to check if:
+        1. Order is still open (not filled/cancelled)
+        2. Mid-price has moved significantly
+        3. Re-pricing is needed to improve fill probability
+        """
+        if not self.manual_orders:
+            return  # No orders to monitor
+        
+        orders_to_remove = []
+        
+        for order_id, order_info in self.manual_orders.items():
+            # Check if order is still pending
+            if order_id not in self.pending_orders:
+                # Order was filled or cancelled - stop monitoring
+                orders_to_remove.append(order_id)
+                continue
+            
+            contract_key = order_info['contract_key']
+            current_mid = self.calculate_mid_price(contract_key)
+            
+            if current_mid == 0:
+                continue  # No valid market data
+            
+            last_mid = order_info['last_mid']
+            
+            # Check if mid-price has moved significantly
+            price_diff = abs(current_mid - last_mid)
+            
+            if price_diff >= 0.05:  # Moved at least one tick ($0.05)
+                # Mid has moved - re-price the order
+                self.log_message(
+                    f"Order #{order_id}: Mid moved ${last_mid:.2f} → ${current_mid:.2f}, re-pricing...",
+                    "INFO"
+                )
+                
+                # Cancel old order
+                self.cancelOrder(order_id)
+                
+                # Place new order at updated mid-price
+                new_order = Order()
+                new_order.action = order_info['action']
+                new_order.totalQuantity = order_info['quantity']
+                new_order.orderType = "LMT"
+                new_order.lmtPrice = current_mid
+                new_order.tif = "DAY"
+                new_order.transmit = True
+                # Explicitly clear attributes not supported by IBKR
+                new_order.eTradeOnly = False
+                new_order.firmQuoteOnly = False
+                
+                # Use same order ID for replacement (IBKR allows this after cancel)
+                self.placeOrder(order_id, order_info['contract'], new_order)
+                
+                # Update tracking
+                order_info['last_mid'] = current_mid
+                order_info['attempts'] += 1
+                
+                self.log_message(
+                    f"Order #{order_id} re-priced to ${current_mid:.2f} (attempt #{order_info['attempts']})",
+                    "SUCCESS"
+                )
+        
+        # Remove filled/cancelled orders from monitoring
+        for order_id in orders_to_remove:
+            del self.manual_orders[order_id]
+        
+        # Continue monitoring if orders remain
+        if self.manual_orders and self.root:
+            self.root.after(self.manual_order_update_interval, self.update_manual_orders)
+    
+    def on_position_tree_click(self, event):
+        """
+        Handle click on position tree to close positions
+        
+        When user clicks "Close" button in Action column, immediately closes
+        the position using same mid-price chasing logic as entries
+        """
+        try:
+            selection = self.position_tree.selection()
+            if not selection:
+                return
+            
+            item = selection[0]
+            values = self.position_tree.item(item, 'values')
+            
+            if not values or len(values) < 7:
+                return
+            
+            # Check if clicked on Action column (index 6)
+            column = self.position_tree.identify_column(event.x)
+            col_index = int(column.replace('#', '')) - 1
+            
+            if col_index != 6:  # Not the Action column
+                return
+            
+            # Extract contract key from the display
+            contract_display = values[0]  # e.g., "SPX_5800.0_C"
+            
+            # Find matching position
+            matching_key = None
+            for key in self.positions.keys():
+                if key in contract_display or contract_display in key:
+                    matching_key = key
+                    break
+            
+            if not matching_key:
+                self.log_message(f"Position not found for {contract_display}", "ERROR")
+                return
+            
+            pos = self.positions[matching_key]
+            
+            # Confirm close
+            confirm = messagebox.askyesno(
+                "Close Position",
+                f"Close position: {contract_display}\n"
+                f"Quantity: {pos['position']}\n"
+                f"Current P&L: ${pos['pnl']:.2f}\n\n"
+                f"Place exit order at mid-price?"
+            )
+            
+            if not confirm:
+                return
+            
+            self.log_message("=" * 60, "INFO")
+            self.log_message(f"MANUAL CLOSE POSITION: {matching_key}", "SUCCESS")
+            
+            # Calculate mid price for exit
+            mid_price = self.calculate_mid_price(matching_key)
+            if mid_price == 0:
+                # Fallback to last price
+                mid_price = pos['currentPrice']
+                self.log_message(f"Using last price ${mid_price:.2f} for exit", "WARNING")
+            
+            # Place sell order (opposite of entry)
+            action = "SELL"
+            quantity = abs(pos['position'])
+            
+            self.place_manual_order(matching_key, pos['contract'], action, quantity, mid_price)
+            self.log_message("=" * 60, "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error closing position: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
     
     def request_historical_data_for_supertrend(self, contract_key: str):
         """Request historical data for supertrend calculation - DEPRECATED"""
@@ -2167,8 +2700,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     self.log_message(f"Looking for call contract: {contract_key}", "INFO")
                     
                     if contract_key in self.market_data:
-                        self.selected_call_contract = self.market_data[contract_key]['contract']
-                        self.log_message(f"✓ Selected CALL: Strike {strike} - Requesting chart data...", "SUCCESS")
+                        # Create fresh contract with current expiration for chart data
+                        self.selected_call_contract = self.create_spxw_contract(float(strike), "C")
+                        self.log_message(f"✓ Selected CALL: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
                         self.update_call_chart()
                     else:
                         self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
@@ -2180,8 +2714,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     self.log_message(f"Looking for put contract: {contract_key}", "INFO")
                     
                     if contract_key in self.market_data:
-                        self.selected_put_contract = self.market_data[contract_key]['contract']
-                        self.log_message(f"✓ Selected PUT: Strike {strike} - Requesting chart data...", "SUCCESS")
+                        # Create fresh contract with current expiration for chart data
+                        self.selected_put_contract = self.create_spxw_contract(float(strike), "P")
+                        self.log_message(f"✓ Selected PUT: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
                         self.update_put_chart()
                     else:
                         self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
@@ -2273,7 +2808,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def on_call_settings_changed(self):
         """Handle call chart settings change - clear data and refresh"""
         if self.selected_call_contract:
-            contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}"
+            # Include expiration in contract_key to match the format used in chart updates
+            contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}_{self.current_expiry}"
             # Clear historical data to force re-request with new settings
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
@@ -2282,7 +2818,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def on_put_settings_changed(self):
         """Handle put chart settings change - clear data and refresh"""
         if self.selected_put_contract:
-            contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}"
+            # Include expiration in contract_key to match the format used in chart updates
+            contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}_{self.current_expiry}"
             # Clear historical data to force re-request with new settings
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
@@ -2314,7 +2851,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not self.selected_call_contract:
             return
         
-        contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}"
+        # Include expiration in contract_key for historical data to avoid cache collisions
+        contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}_{self.current_expiry}"
         
         # Request historical data if not already requested or if settings changed
         if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
@@ -2353,7 +2891,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not self.selected_put_contract:
             return
         
-        contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}"
+        # Include expiration in contract_key for historical data to avoid cache collisions
+        contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}_{self.current_expiry}"
         
         # Request historical data if not already requested or if settings changed
         if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
@@ -2581,28 +3120,51 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         """Update the positions treeview"""
         if not self.root:
             return
-        # Clear existing items
+        
+        # Get existing items to avoid duplicates
+        existing_items = {}
         for item in self.position_tree.get_children():
-            self.position_tree.delete(item)
+            values = self.position_tree.item(item)['values']
+            if values:
+                existing_items[values[0]] = item  # contract_key -> item_id
         
         total_pnl = 0
+        current_keys = set()
         
-        # Add current positions
+        # Add or update current positions
         for contract_key, pos in self.positions.items():
+            current_keys.add(contract_key)
+            
+            # Update P&L with current mid-price
+            self.update_position_pnl(contract_key)
+            
             pnl = pos['pnl']
             pnl_pct = (pos['currentPrice'] / pos['avgCost'] - 1) * 100 if pos['avgCost'] > 0 else 0
             
+            # Format values (showing option prices, not dollar amounts)
             values = (
                 contract_key,
                 pos['position'],
-                f"${pos['avgCost']:.2f}",
-                f"${pos['currentPrice']:.2f}",
-                f"${pnl:.2f}",
-                f"{pnl_pct:.2f}%"
+                f"${pos['avgCost']:.2f}",      # Entry price per option
+                f"${pos['currentPrice']:.2f}",  # Current mid-price per option
+                f"${pnl:.2f}",                  # Total P&L (includes 100x multiplier)
+                f"{pnl_pct:.2f}%",
+                "✕"  # Close button - red X symbol
             )
             
-            self.position_tree.insert("", tk.END, values=values)
+            if contract_key in existing_items:
+                # Update existing row with white text
+                self.position_tree.item(existing_items[contract_key], values=values, tags=('normal_row',))
+            else:
+                # Insert new row with white text
+                self.position_tree.insert("", tk.END, values=values, tags=('normal_row',))
+            
             total_pnl += pnl
+        
+        # Remove stale positions (no longer in self.positions)
+        for contract_key, item_id in existing_items.items():
+            if contract_key not in current_keys:
+                self.position_tree.delete(item_id)
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"

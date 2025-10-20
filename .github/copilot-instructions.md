@@ -1,155 +1,238 @@
-# SPX 0DTE Options Trading Application - AI Coding Guide
+# SPX 0DTE Options Trading Application - AI Agent Instructions
 
 ## Project Overview
-This is a professional Bloomberg-style options trading application for SPX 0DTE (Zero Days To Expiration) options using Interactive Brokers API. The entire application is contained in a single `main.py` file (~2700 lines) with a multi-threaded architecture.
+Bloomberg-style GUI application for automated 0DTE (Zero Days To Expiration) SPX options trading via Interactive Brokers API. Single-file Python architecture with multi-threaded design for non-blocking GUI + real-time market data streaming.
 
-## Architecture & Core Components
+## Core Architecture
 
-### Single-File Design
-- **Everything in `main.py`**: All classes, GUI, trading logic, and API handlers in one file
-- **Class Hierarchy**: `SPXTradingApp(IBKRWrapper, IBKRClient)` - inherits from both IBKR wrapper and client
-- **Threading Model**: GUI thread (tkinter) + Background API thread (IBKR EClient.run())
-- **Communication**: Thread-safe queues for inter-thread messaging
+### Single-File Design Pattern
+- **Everything in `main.py`**: 2,699 lines containing all classes, GUI, trading logic, and IBKR integration
+- No modules/packages - optimize for vertical navigation within one file
+- Section markers use `# ============` for major components, `# ========` for subsections
 
-### Key Classes & Patterns
-```python
-# Main application inherits from both IBKR classes
-class SPXTradingApp(IBKRWrapper, IBKRClient):
-    # Connection state machine
-    ConnectionState.DISCONNECTED → CONNECTING → CONNECTED
-    
-    # Market data structure
-    self.market_data[contract_key] = {
-        'contract': contract, 'right': 'C'/'P', 'strike': float,
-        'bid': float, 'ask': float, 'last': float, 'volume': int,
-        'delta': float, 'gamma': float, 'theta': float, 'vega': float
-    }
+### Class Hierarchy (lines 47-335)
+```
+ConnectionState(Enum) → Connection state machine
+IBKRWrapper(EWrapper) → Handles IBKR API callbacks (incoming data)
+IBKRClient(EClient) → Manages IBKR API commands (outgoing requests)
+SPXTradingApp(IBKRWrapper, IBKRClient) → Main app with multiple inheritance
 ```
 
-### IBKR API Integration Specifics
-- **Client ID Auto-Increment**: Automatically tries client IDs 1-10 if one is in use (error 326)
-- **SPX Contract Creation**: Uses `tradingClass = "SPXW"` for SPX weekly options
-- **Manual Option Chain**: Creates strikes dynamically around SPX price (no IBKR chain request)
-- **Real-time Data**: Subscribes to market data for all strikes, updates GUI every 500ms
+### Threading Model (Critical!)
+- **Main/GUI Thread**: Runs `tkinter` mainloop, updates UI via `root.after()` polling
+- **Background/API Thread**: Runs `EClient.run()` message loop in separate thread
+- **Communication**: Thread-safe `queue.Queue()` for inter-thread messaging (`gui_queue`, `api_queue`)
+- **Never call GUI methods from API thread directly** - always queue updates and process in main thread
+
+## Key Data Structures
+
+### Contract Key Format
+All options identified by standardized string: `"SPX_{strike}_{right}"` (e.g., `"SPX_5800.0_C"`)
+- Used as dictionary keys throughout: `market_data`, `positions`, `historical_data`
+- Generated in `create_spxw_contract()` and `IBKRWrapper` callbacks
+
+### Critical State Dictionaries
+- `market_data`: Live bid/ask/last/volume/greeks keyed by contract_key
+- `market_data_map`: Maps IBKR reqId → contract_key for callback routing
+- `positions`: Active positions with entry price, quantity, PnL
+- `pending_orders`: Tracks orders between submission and fill (orderId → tuple)
+- `historical_data_requests`: Maps reqId → contract_key for historical data callbacks
+
+### Connection State Machine
+```
+DISCONNECTED → CONNECTING → CONNECTED
+       ↑ (auto-retry)          ↓ (on error)
+       └─────────────────────────┘
+```
+- Max 10 reconnection attempts with 5-second delays
+- Client ID rotation (1-10) if ID conflicts occur
+- Auto-reconnect on errors: 502, 503, 504, 1100, 2110
+
+## SPXW Contract Specifications
+
+### Trading Class: "SPXW"
+- **Symbol**: "SPX" (NOT "SPXW" - `contract.symbol = "SPX"`)
+- **TradingClass**: "SPXW" (`contract.tradingClass = "SPXW"`)
+- **Exchange**: "SMART"
+- **Currency**: "USD"
+- **Multiplier**: "100"
+- **SecType**: "OPT"
+
+### Expiration Date Handling
+- Format: "YYYYMMDD" (e.g., "20251020")
+- Calculated by `calculate_expiry_date(offset)` - handles weekends/holidays
+- Monday-Friday expirations for 0DTE
+- User can switch expirations via dropdown (0 DTE, 1 DTE, etc.)
 
 ## Trading Strategy Implementation
 
-### Hourly Straddle Entry
-- **Trigger**: `now.minute == 0 and now.second == 0` (top of every hour)
-- **Selection Logic**: Find cheapest call/put with `ask <= $0.50`
-- **Order Placement**: Limit orders at ask price for both legs
+### Manual Trading Mode (NEW - lines 2118-2430)
+**Risk-based one-click trading with intelligent order management**
 
-### Option Chain Generation
-```python
-# Around current SPX price, every 5 points
-center_strike = round(self.spx_price / 5) * 5
-strikes = range(center_strike - (strikes_below * 5), 
-               center_strike + (strikes_above * 5), 5)
+#### Entry System:
+- **BUY CALL** button: Finds call option closest to max risk without exceeding
+- **BUY PUT** button: Finds put option closest to max risk without exceeding  
+- Max risk input: Dollar amount (e.g., $500 = $5.00 per contract, accounting for 100x multiplier)
+- Scans entire loaded chain for optimal strike matching risk tolerance
+
+#### Order Management (Mid-Price Chasing):
+1. Initial order placed at mid-price (bid+ask)/2 with SPX rounding:
+   - Prices ≥ $3.00: Round to $0.10 increments
+   - Prices < $3.00: Round to $0.05 increments
+2. Monitor every 1 second (`manual_order_update_interval`)
+3. If mid-price moves ≥ $0.05 and order unfilled → cancel and replace at new mid
+4. Continue chasing until filled or manually cancelled
+5. Tracked in `manual_orders` dict with attempt counters and timestamps
+
+#### Exit System:
+- "[Close]" button in Positions grid Action column
+- Clicks trigger `on_position_tree_click()` handler
+- Exit orders use same mid-price chasing logic as entries
+- Confirmation dialog shows current P&L before closing
+
+#### Key Functions:
+- `manual_buy_call()` / `manual_buy_put()`: Entry point handlers
+- `find_option_by_max_risk()`: Scans chain for optimal strike
+- `calculate_mid_price()`: Computes mid with proper rounding
+- `round_to_spx_increment()`: Enforces CBOE SPX tick sizes
+- `place_manual_order()`: Initiates order with tracking
+- `update_manual_orders()`: Background monitoring loop
+
+### Hourly Straddle Entry (`enter_straddle()` line 1918)
+1. Triggered at top of hour by `schedule_hourly_trading()` checking `datetime.now().minute == 0`
+2. Scans `market_data` for cheapest call/put with ask ≤ $0.50
+3. Places limit orders at ask price for both legs
+4. Tracks in `active_straddles` list with entry prices and timestamps
+
+### Supertrend Indicator (`calculate_supertrend()` line 2042)
+- Uses ATR (Average True Range) with configurable period (default: 14)
+- Chandelier multiplier for trailing distance (default: 3.0)
+- Calculates on 1-minute historical bars
+- Returns directional signal and stop levels for exit logic
+
+### Position Tracking
+- Self-calculated PnL (not relying on IBKR's position updates)
+- Real-time update via `tickPrice()` callback → `update_position_pnl()`
+- Greeks streamed live via `tickOptionComputation()` callback
+
+## GUI Architecture (ttkbootstrap)
+
+### Theme: "darkly" with IBKR TWS Color Matching
+- **Background**: Pure black (#000000) to match TWS
+- **ITM Options**: Subtle green (#001a00 calls) / red (#1a0000 puts) tints
+- **OTM Options**: Pure black (#000000) with dimmed text (#808080)
+- **Text**: Green (#00ff00) for gains, Red (#ff0000) for losses
+
+### Main Components
+- **Tab 1 (Trading)**: Option chain treeview, positions, orders, Supertrend chart, activity log
+- **Tab 2 (Settings)**: Connection params, strategy params, save functionality
+- **Status Bar**: Connection status, SPX price display, connect/disconnect buttons
+
+### Option Chain Treeview Layout
+Mirrors IBKR TWS layout with calls on left, strike centered, puts on right:
 ```
-
-### Risk Management Components
-- **Supertrend Indicator**: ATR-based trend following for exits
-- **Pyramiding**: Scale into profitable positions on doubling moves
-- **Position Tracking**: Self-calculated PnL using `(current_price - avg_cost) * position * 100`
-
-## GUI Architecture (Bloomberg-Style)
-
-### Color Scheme (IBKR TWS Theme)
-- **ITM Options**: Dark green/red backgrounds for in-the-money options
-- **OTM Options**: Pure black backgrounds for out-of-the-money options
-- **ATM Options**: Dark gray for at-the-money strikes
-- **Text Colors**: Bright green/red for gains/losses, gray for neutral values
-
-### Treeview Layout (IBKR Style)
-- **Calls Left**: Bid, Ask, Last, Volume, Gamma, Vega, Theta, Delta, IV
-- **Center**: Strike (bold, centered)
-- **Puts Right**: Delta, Theta, Vega, Gamma, Volume, Last, Ask, Bid
-
-### Chart Integration
-- **Dual Charts**: Call chart (left) + Put chart (right)
-- **Click Selection**: Click option chain row to load candlestick chart
-- **Historical Data**: Requests via `reqHistoricalData()` with contract-specific settings
-
-## Critical Development Patterns
-
-### Connection Management
-```python
-# Auto-reconnection with backoff
-self.reconnect_attempts < self.max_reconnect_attempts (10)
-self.reconnect_delay = 5  # seconds between attempts
-
-# Connection state updates
-def on_connected(self):
-    self.subscribe_spx_price()      # SPX underlying
-    self.request_option_chain()     # Build strikes around SPX
-    self.subscribe_market_data()    # All option contracts
+C_Bid | C_Ask | C_Last | ... | STRIKE | ... | P_Last | P_Ask | P_Bid
 ```
+- Real-time updates every 500ms via `update_option_chain_display()`
+- Click handler for manual trading: `on_option_chain_click()`
 
-### Error Handling Specifics
-- **Error 326** (Client ID in use): Auto-increment client ID and retry
-- **Error 502/503/504**: Connection issues trigger reconnection
-- **Historical Data Errors**: Paper trading accounts have limited access
-
-### Data Request IDs
-```python
-# Request ID management pattern
-self.next_req_id = 1000  # Start high to avoid conflicts
-req_id = self.next_req_id
-self.next_req_id += 1
-self.reqMktData(req_id, contract, "", False, False, [])
-```
+## Settings Persistence
+- **File**: `settings.json` (auto-created on first save)
+- **Fields**: host, port, client_id, atr_period, chandelier_multiplier, strikes_above/below
+- **Load**: Automatic on startup via `load_settings()` in `__init__`
+- **Save**: Manual via Settings tab or auto-save on reconnect
 
 ## Development Workflows
 
-### Setup & Testing
-```bash
-# Virtual environment setup
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-pip install -r requirements.txt
-
-# IBKR Connection Required
-# Paper Trading: port 7497, Live: port 7496
+### Running the Application
+```powershell
 python main.py
 ```
+No build step - direct execution. Requires TWS/IB Gateway running and configured.
 
-### Key Configuration Points
-- **`settings.json`**: Connection params, strategy settings (auto-created)
-- **TWS/Gateway Setup**: Enable API, socket clients, port configuration
-- **Market Data**: Requires SPX + SPXW subscriptions
+### Testing Requirements
+1. **IBKR Setup**: TWS or IB Gateway must be running on specified port
+2. **Paper Trading**: Always use port 7497 for testing (7496 is live)
+3. **Market Data Subscriptions**: Requires SPX + SPXW data subscriptions
+4. **Market Hours**: 9:30 AM - 4:00 PM ET for full functionality
 
-### Debugging Patterns
-- **Activity Log**: Color-coded by severity in GUI text widget
-- **Connection State**: Monitor `ConnectionState` enum in status bar
-- **Request Tracking**: Each API request gets unique ID for debugging
+### Common Development Tasks
 
-## Common Modifications
+**Adding New Market Data Fields:**
+1. Update `market_data` dict initialization (line ~1500s)
+2. Add column to option chain treeview setup (line ~640)
+3. Update `update_option_chain_display()` to populate new column
+4. Add callback handling in `IBKRWrapper.tickPrice/tickSize/tickOptionComputation`
 
-### Adding New Option Strategies
-1. Modify `check_trade_time()` for different triggers
-2. Update `enter_straddle()` selection logic
-3. Add position tracking in `update_position_on_fill()`
+**Modifying Trading Logic:**
+- Entry logic: `enter_straddle()` (line 1851)
+- Exit logic: `calculate_supertrend()` + position monitoring loops
+- Risk management: Check `active_straddles` tracking and PnL calculations
 
-### UI Customization
-- **Color Scheme**: Modify ttkbootstrap style configurations in `setup_gui()`
-- **Chart Settings**: Update `draw_candlestick_chart()` for different indicators
-- **Layout Changes**: Edit `create_trading_tab()` frame structure
+**Connection Issues:**
+- Review `ConnectionState` enum and state transitions
+- Check `error()` callback for error code handling (line 63)
+- Verify client ID rotation logic (line 86-93)
 
-### Performance Optimization
-- **Chart Debouncing**: Uses 100ms debounce delay for responsiveness
-- **Market Data Updates**: 500ms GUI update cycle
-- **Memory Management**: Auto-truncates logs at 1000 lines
+## IBKR API Quirks & Gotchas
 
-## Integration Points & Dependencies
+### Request ID Management
+- Start at 1000: `next_req_id = 1000` (line 370)
+- Auto-increment for each market data or historical data request
+- Must track mapping: `reqId → contract_key` in `market_data_map`
 
-### External Services
-- **Interactive Brokers API**: Core dependency via `ibapi` package
-- **Market Data**: Real-time quotes require active IBKR subscriptions
-- **Historical Data**: Limited availability in paper trading accounts
+### Market Data Subscriptions
+- Each option requires separate `reqMktData()` call
+- Subscriptions persist until `cancelMktData()` called
+- Reconnection requires re-subscribing to ALL contracts (tracked in `subscribed_contracts`)
 
-### Critical Files
-- **`main.py`**: Entire application (modify with caution)
-- **`settings.json`**: User preferences (auto-generated)
-- **`requirements.txt`**: Python dependencies
+### Error Code Reference (from `error()` callback)
+- **326**: Client ID in use → rotate to next ID
+- **502/503/504**: Connection errors → trigger reconnect
+- **1100/2110**: Network disconnection → trigger reconnect
+- **354**: Market data not subscribed → warning only
+- **162/165/321**: Historical data permission issues (common in paper trading)
 
-This is a single-file application optimized for rapid development and professional trading use. When modifying, always test with paper trading first and maintain the existing threading model.
+### Historical Data Limitations
+- Paper trading accounts have restricted historical data access
+- Requests may fail with error 162 - handle gracefully with fallback logic
+- Always check `if reqId in historical_data_requests` before processing
+
+## Code Style & Patterns
+
+### Logging Convention
+Use `log_message(msg, level)` with levels: "ERROR", "WARNING", "SUCCESS", "INFO"
+- Separator bars: `"=" * 60` for major events
+- Detailed trade logging with strike, prices, deltas
+
+### Error Handling Pattern
+```python
+if self.connection_state != ConnectionState.CONNECTED:
+    self.log_message("Cannot perform action: Not connected", "WARNING")
+    return
+```
+Always check connection state before IBKR API calls.
+
+### GUI Updates from Background Thread
+```python
+# WRONG: Direct GUI update from API thread
+self.position_tree.insert(...)
+
+# CORRECT: Queue update for main thread
+self.gui_queue.put(("update_position", contract_key, data))
+# Then process in main thread via root.after() polling
+```
+
+## Dependencies
+- `ibapi>=9.81.1`: Interactive Brokers API
+- `ttkbootstrap>=1.10.1`: Modern tkinter theming
+- `pandas>=2.0.0`, `numpy>=1.24.0`: Data processing
+- `matplotlib>=3.7.0`: Chart rendering
+
+Install via: `pip install -r requirements.txt`
+
+## Critical Constraints
+- **Windows-primary**: Paths and shell commands assume Windows (PowerShell)
+- **Real-money risk**: Always test with paper trading first (port 7497)
+- **Market hours dependency**: Most functionality requires active market hours
+- **Single-file philosophy**: Keep all code in `main.py` - avoid splitting into modules
