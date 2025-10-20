@@ -23,6 +23,7 @@ import pandas as pd
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
+from tksheet import Sheet
 
 if TYPE_CHECKING:
     from ttkbootstrap import Window
@@ -407,6 +408,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.option_chain_data = {}
         self.market_data = {}
         self.market_data_map = {}  # reqId -> contract_key
+        self.strike_to_row = {}  # strike -> sheet row index mapping for tksheet
         self.historical_data = {}
         self.historical_data_requests = {}  # reqId -> contract_key
         self.positions = {}
@@ -665,136 +667,99 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         style.configure('RefreshChain.TButton', foreground='white')
         refresh_btn.configure(style='RefreshChain.TButton')
         
-        # Option Chain Treeview - IBKR Style (Calls on left, Puts on right)
+        # Option Chain tksheet - IBKR TWS Professional Style
         chain_frame = ttk.Frame(tab)
-        chain_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)  # Changed to expand=False so it doesn't take all space
+        chain_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)
         
-        # Scrollbars
-        chain_vsb = ttk.Scrollbar(chain_frame, orient=VERTICAL)
-        chain_vsb.pack(side=RIGHT, fill=Y)
+        # IBKR TWS Color Scheme from Screenshot
+        TWS_COLORS = {
+            'bg': '#000000',           # Pure black background
+            'fg': '#b0b0b0',           # Neutral text
+            'header_bg': '#1a1a1a',    # Dark header background
+            'header_fg': '#e0e0e0',    # Light header text
+            'grid_line': '#2a2a2a',    # Subtle grid lines
+            'selected': '#1a2a3a',     # Selection highlight
+            'call_itm_deep': '#002a00', # Deep ITM call background
+            'call_itm': '#001a00',      # ITM call background
+            'put_itm_deep': '#2a0000',  # Deep ITM put background
+            'put_itm': '#1a0000',       # ITM put background
+            'otm_fg': '#808080',        # OTM dimmed text
+            'strike_bg': '#0a0a0a',     # Strike column background
+            'positive': '#00ff00',      # Positive values (green)
+            'negative': '#ff0000'       # Negative values (red)
+        }
         
-        chain_hsb = ttk.Scrollbar(chain_frame, orient=HORIZONTAL)
-        chain_hsb.pack(side=BOTTOM, fill=X)
-        
-        # Treeview columns matching IBKR layout
-        # CALLS: Bid, Ask, Last, Volume, Gamma, Vega, Theta, Delta, Imp Volatility
+        # Column headers matching IBKR layout
+        # CALLS: Bid, Ask, Last, Volume, Gamma, Vega, Theta, Delta, Imp Vol
         # STRIKE (center)
         # PUTS: Delta, Theta, Vega, Gamma, Volume, Last, Ask, Bid
-        columns = (
-            # Call side (left)
-            "C_Bid", "C_Ask", "C_Last", "C_Vol", "C_Gamma", "C_Vega", "C_Theta", "C_Delta", "C_IV",
-            # Strike (center)
-            "Strike",
-            # Put side (right)
-            "P_Delta", "P_Theta", "P_Vega", "P_Gamma", "P_Vol", "P_Last", "P_Ask", "P_Bid"
+        headers = [
+            # Call side (left) - 9 columns
+            "Bid", "Ask", "Last", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol",
+            # Strike (center) - 1 column
+            "● STRIKE ●",
+            # Put side (right) - 8 columns
+            "Delta", "Theta", "Vega", "Gamma", "Volume", "Last", "Ask", "Bid"
+        ]
+        
+        # Create tksheet with professional configuration
+        self.option_sheet = Sheet(
+            chain_frame,
+            headers=headers,
+            height=330,  # ~12 rows visible (similar to old tree height)
+            width=1400,  # Wide enough for all columns
+            theme="dark",
+            # Disable editing (read-only display)
+            edit_cell_validation=False,
+            # Enable selections for click detection
+            enable_bindings=("single_select", "row_select")
         )
         
-        self.option_tree = ttk.Treeview(
-            chain_frame, 
-            columns=columns, 
-            show="headings", 
-            height=12,  # Reduced from 30 to 12 rows to show activity log
-            yscrollcommand=chain_vsb.set,
-            xscrollcommand=chain_hsb.set
+        # Configure TWS color scheme
+        self.option_sheet.set_options(
+            font=("Arial", 9, "normal"),
+            header_font=("Arial", 9, "bold"),
+            table_bg=TWS_COLORS['bg'],
+            table_fg=TWS_COLORS['fg'],
+            table_grid_fg=TWS_COLORS['grid_line'],
+            table_selected_cells_bg=TWS_COLORS['selected'],
+            table_selected_cells_fg="#ffffff",
+            header_bg=TWS_COLORS['header_bg'],
+            header_fg=TWS_COLORS['header_fg'],
+            header_grid_fg=TWS_COLORS['grid_line'],
+            index_bg=TWS_COLORS['bg'],
+            index_fg=TWS_COLORS['fg'],
+            top_left_bg=TWS_COLORS['bg'],
+            show_index=False  # Hide row numbers for cleaner look
         )
         
-        chain_vsb.config(command=self.option_tree.yview)
-        chain_hsb.config(command=self.option_tree.xview)
-        
-        # Configure column headers and widths
-        call_headers = {
-            "C_Bid": "Bid", "C_Ask": "Ask", "C_Last": "Last", "C_Vol": "Volume",
-            "C_Gamma": "Gamma", "C_Vega": "Vega", "C_Theta": "Theta", 
-            "C_Delta": "Delta", "C_IV": "Imp Vol"
-        }
-        
-        put_headers = {
-            "P_Delta": "Delta", "P_Theta": "Theta", "P_Vega": "Vega", 
-            "P_Gamma": "Gamma", "P_Vol": "Volume", "P_Last": "Last",
-            "P_Ask": "Ask", "P_Bid": "Bid"
-        }
-        
-        # Set column widths
+        # Set column widths (matching old Treeview layout)
         col_width = 70
-        strike_width = 100  # Slightly wider for bold text
+        strike_width = 100
         
-        # Create a custom font for strike column
-        strike_font = tkfont.Font(family="Arial", size=11, weight="bold")
+        for i, header in enumerate(headers):
+            if header == "● STRIKE ●":
+                self.option_sheet.column_width(column=i, width=strike_width)
+            else:
+                self.option_sheet.column_width(column=i, width=col_width)
         
-        for col in columns:
-            if col == "Strike":
-                self.option_tree.heading(col, text="● STRIKE ●")  # Make heading stand out
-                self.option_tree.column(col, width=strike_width, anchor=CENTER)
-            elif col.startswith("C_"):
-                self.option_tree.heading(col, text=call_headers[col])
-                self.option_tree.column(col, width=col_width, anchor=CENTER)
-            else:  # Put columns
-                self.option_tree.heading(col, text=put_headers[col])
-                self.option_tree.column(col, width=col_width, anchor=CENTER)
+        # Pack sheet
+        self.option_sheet.pack(fill=BOTH, expand=YES, padx=0, pady=0)
         
-        # Configure row tags for ITM/OTM color coding - IBKR TWS exact colors
-        strike_font = tkfont.Font(family="Arial", size=10, weight="bold")
-        normal_font = tkfont.Font(family="Arial", size=9)
+        # Bind click event for option selection
+        self.option_sheet.bind("<ButtonRelease-1>", self.on_option_sheet_click)
         
-        # IBKR TWS Color Scheme Analysis from Screenshot:
-        # ================================================
-        # Background: Pure black (#000000) or very close (#010101)
-        # ITM Calls (left side): Very subtle dark green tint (#001100 to #002200)
-        # ITM Puts (right side): Very subtle dark red tint (#110000 to #220000)
-        # OTM: Almost pure black (#000000 to #020202)
-        # Strike column: Centered, slightly lighter (#0a0a0a)
-        # 
-        # Text Colors:
-        # - Positive values/changes: Bright green (#00ff00 or #00dd00)
-        # - Negative values/changes: Bright red (#ff0000 or #dd0000)  
-        # - Neutral values: Light gray (#a0a0a0 to #c0c0c0)
-        # - Headers: White or near-white (#e0e0e0 to #ffffff)
+        # Store TWS colors for later use in cell formatting
+        self.tws_colors = TWS_COLORS
         
-        # Call side (left) coloring
-        self.option_tree.tag_configure("call_itm_deep", 
-                                      background="#002a00",   # Deeper green for deep ITM
-                                      foreground="#b0b0b0", 
-                                      font=normal_font)
-        self.option_tree.tag_configure("call_itm", 
-                                      background="#001a00",   # Subtle green for ITM
-                                      foreground="#b0b0b0", 
-                                      font=normal_font)
-        self.option_tree.tag_configure("call_otm", 
-                                      background="#000000",   # Pure black for OTM
-                                      foreground="#808080",   # Dimmer text for OTM
-                                      font=normal_font)
-        
-        # Put side (right) coloring
-        self.option_tree.tag_configure("put_itm_deep", 
-                                      background="#2a0000",   # Deeper red for deep ITM
-                                      foreground="#b0b0b0", 
-                                      font=normal_font)
-        self.option_tree.tag_configure("put_itm", 
-                                      background="#1a0000",   # Subtle red for ITM
-                                      foreground="#b0b0b0", 
-                                      font=normal_font)
-        self.option_tree.tag_configure("put_otm", 
-                                      background="#000000",   # Pure black for OTM
-                                      foreground="#808080",   # Dimmer text for OTM
-                                      font=normal_font)
-        
-        # ATM: Neutral, slightly lighter
-        self.option_tree.tag_configure("atm", 
-                                      background="#0a0a0a",   # Very dark gray
-                                      foreground="#d0d0d0",   # Bright text for ATM
-                                      font=strike_font)       # Bold font for strike
-        
-        # Additional styling for readability (not directly supported by ttk.Treeview at cell level,
-        # but documented for future reference if we implement custom rendering)
-        # Note: These colors should be applied in the value formatting logic
-        # - Green text (#00ff00) for positive changes/deltas
-        # - Red text (#ff0000) for negative changes/deltas
-        # - Gray text (#a0a0a0) for neutral values
-        
-        self.option_tree.pack(fill=BOTH, expand=YES)
-        
-        # Bind click event for option chain
-        self.option_tree.bind('<ButtonRelease-1>', self.on_option_chain_click)
+        # Store column indices for easy reference
+        self.sheet_cols = {
+            'c_bid': 0, 'c_ask': 1, 'c_last': 2, 'c_vol': 3,
+            'c_gamma': 4, 'c_vega': 5, 'c_theta': 6, 'c_delta': 7, 'c_iv': 8,
+            'strike': 9,
+            'p_delta': 10, 'p_theta': 11, 'p_vega': 12, 'p_gamma': 13,
+            'p_vol': 14, 'p_last': 15, 'p_ask': 16, 'p_bid': 17
+        }
         
         # Bottom panel: Positions/Orders side-by-side, then Charts, then Log
         bottom_frame = ttk.Frame(tab)
@@ -1706,7 +1671,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def subscribe_market_data(self):
         """
         Subscribe to real-time market data for all option contracts.
-        Creates treeview rows with calls on left and puts on right (IBKR style).
+        Creates tksheet rows with calls on left and puts on right (IBKR style).
         """
         if not self.root:
             return
@@ -1720,10 +1685,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.market_data.clear()
         self.market_data_map.clear()
         self.subscribed_contracts.clear()
+        self.strike_to_row.clear()
         
-        # Clear treeview display
-        for item in self.option_tree.get_children():
-            self.option_tree.delete(item)
+        # Clear sheet display
+        if hasattr(self, 'option_sheet'):
+            self.option_sheet.set_sheet_data([[]])
         
         # Organize contracts by strike (calls and puts together)
         strikes_dict = {}
@@ -1742,8 +1708,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Sort strikes
         sorted_strikes = sorted(strikes_dict.keys())
         
+        # Prepare sheet data (2D list)
+        sheet_data = []
+        
         # Subscribe and create display rows
-        for strike in sorted_strikes:
+        for row_idx, strike in enumerate(sorted_strikes):
             strike_data = strikes_dict[strike]
             
             # Subscribe to call
@@ -1759,7 +1728,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     'right': 'C',
                     'strike': strike,
                     'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
-                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0,
+                    'row_index': row_idx  # Store row index instead of tree_item
                 }
                 
                 self.subscribed_contracts.append(('C', strike, strike_data['call_contract']))
@@ -1778,27 +1748,29 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     'right': 'P',
                     'strike': strike,
                     'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
-                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0,
+                    'row_index': row_idx  # Store row index instead of tree_item
                 }
                 
                 self.subscribed_contracts.append(('P', strike, strike_data['put_contract']))
                 self.reqMktData(req_id, strike_data['put_contract'], "", False, False, [])
             
-            # Create treeview row with call on left, strike in center, put on right
+            # Create sheet row with call on left, strike in center, put on right
             # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
-            values = (
+            row_data = [
                 "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00", "0.00", "0.00",  # Call data
                 f"{strike:.2f}",  # Strike
                 "0.00", "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00"  # Put data
-            )
+            ]
             
-            item = self.option_tree.insert("", tk.END, values=values, tags=(str(strike),))
+            sheet_data.append(row_data)
             
-            # Store tree item reference in both call and put data
-            if f"SPX_{strike}_C" in self.market_data:
-                self.market_data[f"SPX_{strike}_C"]['tree_item'] = item
-            if f"SPX_{strike}_P" in self.market_data:
-                self.market_data[f"SPX_{strike}_P"]['tree_item'] = item
+            # Map strike to row index
+            self.strike_to_row[strike] = row_idx
+        
+        # Populate sheet with data
+        if hasattr(self, 'option_sheet') and sheet_data:
+            self.option_sheet.set_sheet_data(sheet_data)
         
         self.log_message(
             f"Successfully subscribed to {len(sorted_strikes) * 2} contracts ({len(sorted_strikes)} strikes)", 
@@ -1833,10 +1805,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def update_option_chain_display(self):
         """
-        Update the option chain display with latest market data.
-        Updates rows with call data on left and put data on right (IBKR style).
+        Update the option chain display with latest market data using tksheet.
+        Updates cells with call data on left and put data on right (IBKR TWS style).
+        Applies cell-level color coding for ITM/OTM and positive/negative values.
         """
-        if not self.root:
+        if not self.root or not hasattr(self, 'option_sheet'):
             return
         
         try:
@@ -1857,95 +1830,142 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 except (ValueError, TypeError):
                     return default
             
-            # Group updates by strike (each row has both call and put)
-            strikes_to_update = {}
+            # Helper function to get cell color based on value (for greeks/prices)
+            def get_value_color(value):
+                """Return text color based on positive/negative value"""
+                try:
+                    if value is None or value == 0:
+                        return None  # Use default
+                    num_val = float(value)
+                    if num_val > 0:
+                        return self.tws_colors['positive']  # Green
+                    elif num_val < 0:
+                        return self.tws_colors['negative']  # Red
+                except (ValueError, TypeError):
+                    pass
+                return None  # Default
             
-            for contract_key, data in self.market_data.items():
-                strike = data['strike']
-                right = data['right']
-                tree_item = data.get('tree_item')
+            # Helper function to get ITM/OTM background color
+            def get_row_bg_color(strike):
+                """Determine background color based on ITM/OTM status"""
+                if self.spx_price <= 0:
+                    return self.tws_colors['bg']  # Default black
                 
-                if tree_item and self.option_tree.exists(tree_item):
-                    if strike not in strikes_to_update:
-                        strikes_to_update[strike] = {
-                            'tree_item': tree_item,
-                            'call': None,
-                            'put': None
-                        }
-                    
-                    if right == 'C':
-                        strikes_to_update[strike]['call'] = data
+                # ATM tolerance (within 0.5% of SPX price)
+                atm_tolerance = self.spx_price * 0.005
+                strike_distance = abs(strike - self.spx_price)
+                
+                if strike_distance <= atm_tolerance:
+                    return self.tws_colors['strike_bg']  # ATM: slightly lighter
+                elif strike < self.spx_price:
+                    # Calls ITM when strike < spot
+                    if (self.spx_price - strike) > (self.spx_price * 0.02):
+                        return self.tws_colors['call_itm_deep']  # Deep ITM
                     else:
-                        strikes_to_update[strike]['put'] = data
+                        return self.tws_colors['call_itm']  # ITM
+                else:
+                    # Puts ITM when strike > spot
+                    if (strike - self.spx_price) > (self.spx_price * 0.02):
+                        return self.tws_colors['put_itm_deep']  # Deep ITM
+                    else:
+                        return self.tws_colors['put_itm']  # ITM
             
-            # Update each row with complete call/put data
-            for strike, strike_data in strikes_to_update.items():
-                call_data = strike_data['call']
-                put_data = strike_data['put']
-                tree_item = strike_data['tree_item']
+            # Batch update cells for performance
+            cell_updates = []  # (row, col, value)
+            cell_formats = []  # (row, col, fg_color, bg_color)
+            
+            # Process each strike row
+            for strike, row_idx in self.strike_to_row.items():
+                # Get call and put data for this strike
+                call_key = f"SPX_{strike}_C"
+                put_key = f"SPX_{strike}_P"
+                call_data = self.market_data.get(call_key, {})
+                put_data = self.market_data.get(put_key, {})
                 
-                # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
-                values = [
-                    # Call columns (left side)
-                    safe_format(call_data['bid'] if call_data else None, ".2f"),
-                    safe_format(call_data['ask'] if call_data else None, ".2f"),
-                    safe_format(call_data['last'] if call_data else None, ".2f"),
-                    safe_format(call_data['volume'] if call_data else None, "int"),
-                    safe_format(call_data['gamma'] if call_data else None, ".4f"),
-                    safe_format(call_data['vega'] if call_data else None, ".4f"),
-                    safe_format(call_data['theta'] if call_data else None, ".4f"),
-                    safe_format(call_data['delta'] if call_data else None, ".4f"),
-                    safe_format(call_data.get('iv', 0) if call_data else None, ".2f"),
-                    
-                    # Strike (center)
-                    f"{strike:.2f}",
-                    
-                    # Put columns (right side)
-                    safe_format(put_data['delta'] if put_data else None, ".4f"),
-                    safe_format(put_data['theta'] if put_data else None, ".4f"),
-                    safe_format(put_data['vega'] if put_data else None, ".4f"),
-                    safe_format(put_data['gamma'] if put_data else None, ".4f"),
-                    safe_format(put_data['volume'] if put_data else None, "int"),
-                    safe_format(put_data['last'] if put_data else None, ".2f"),
-                    safe_format(put_data['ask'] if put_data else None, ".2f"),
-                    safe_format(put_data['bid'] if put_data else None, ".2f"),
+                # Determine row background based on ITM/OTM status
+                row_bg = get_row_bg_color(strike)
+                
+                # Build row values
+                # Call columns (0-8)
+                call_values = [
+                    safe_format(call_data.get('bid'), ".2f"),
+                    safe_format(call_data.get('ask'), ".2f"),
+                    safe_format(call_data.get('last'), ".2f"),
+                    safe_format(call_data.get('volume'), "int"),
+                    safe_format(call_data.get('gamma'), ".4f"),
+                    safe_format(call_data.get('vega'), ".4f"),
+                    safe_format(call_data.get('theta'), ".4f"),
+                    safe_format(call_data.get('delta'), ".4f"),
+                    safe_format(call_data.get('iv'), ".2f")
                 ]
                 
-                # Determine ITM/OTM/ATM status for color coding - IBKR TWS style
-                tags = []
-                if self.spx_price > 0:
-                    # Tolerance for ATM (within 0.5% of SPX price)
-                    atm_tolerance = self.spx_price * 0.005
-                    strike_distance = abs(strike - self.spx_price)
-                    
-                    if strike_distance <= atm_tolerance:
-                        # At the money
-                        tags.append("atm")
-                    elif strike < self.spx_price:
-                        # Calls ITM when strike < spot
-                        # Deep ITM: more than 2% below spot
-                        if (self.spx_price - strike) > (self.spx_price * 0.02):
-                            tags.append("call_itm_deep")
-                        else:
-                            tags.append("call_itm")
-                    else:
-                        # Puts ITM when strike > spot
-                        # Deep ITM: more than 2% above spot
-                        if (strike - self.spx_price) > (self.spx_price * 0.02):
-                            tags.append("put_itm_deep")
-                        else:
-                            tags.append("put_itm")
-                else:
-                    # No SPX price available, use OTM as default
-                    tags.append("call_otm")
+                # Strike column (9)
+                strike_value = f"{strike:.2f}"
                 
-                self.option_tree.item(tree_item, values=values, tags=tags)
+                # Put columns (10-17)
+                put_values = [
+                    safe_format(put_data.get('delta'), ".4f"),
+                    safe_format(put_data.get('theta'), ".4f"),
+                    safe_format(put_data.get('vega'), ".4f"),
+                    safe_format(put_data.get('gamma'), ".4f"),
+                    safe_format(put_data.get('volume'), "int"),
+                    safe_format(put_data.get('last'), ".2f"),
+                    safe_format(put_data.get('ask'), ".2f"),
+                    safe_format(put_data.get('bid'), ".2f")
+                ]
+                
+                # Update cells with values
+                for col_idx, val in enumerate(call_values):
+                    cell_updates.append((row_idx, col_idx, val))
+                    # Apply colors: positive/negative for greeks, default otherwise
+                    if col_idx in [4, 5, 6, 7]:  # Gamma, Vega, Theta, Delta
+                        fg_color = get_value_color(call_data.get(list(call_data.keys())[col_idx + 4]))
+                        cell_formats.append((row_idx, col_idx, fg_color, row_bg))
+                    else:
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
+                
+                # Strike column (bold, centered)
+                cell_updates.append((row_idx, 9, strike_value))
+                cell_formats.append((row_idx, 9, self.tws_colors['header_fg'], self.tws_colors['strike_bg']))
+                
+                # Put columns
+                for col_offset, val in enumerate(put_values):
+                    col_idx = 10 + col_offset
+                    cell_updates.append((row_idx, col_idx, val))
+                    # Apply colors: positive/negative for greeks, default otherwise
+                    if col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma
+                        fg_color = get_value_color(put_data.get(list(put_data.keys())[col_offset]))
+                        cell_formats.append((row_idx, col_idx, fg_color, row_bg))
+                    else:
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
+            
+            # Apply all cell updates in batch
+            for row, col, value in cell_updates:
+                try:
+                    self.option_sheet.set_cell_data(row, col, value, redraw=False)
+                except:
+                    pass  # Skip if row/col out of range
+            
+            # Apply all cell formatting in batch
+            for row, col, fg, bg in cell_formats:
+                try:
+                    if fg:
+                        self.option_sheet.highlight_cells(row, col, fg=fg, bg=bg, redraw=False)
+                    elif bg:
+                        self.option_sheet.highlight_cells(row, col, bg=bg, redraw=False)
+                except:
+                    pass  # Skip if row/col out of range
+            
+            # Redraw once after all updates
+            self.option_sheet.redraw()
             
             # Schedule next update
             self.root.after(500, self.update_option_chain_display)
             
         except Exception as e:
             self.log_message(f"Error updating option chain display: {e}", "ERROR")
+            import traceback
+            traceback.print_exc()
             # Continue updating even if there was an error
             self.root.after(500, self.update_option_chain_display)
     
@@ -2666,68 +2686,85 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # This method is no longer used - charts are now updated via update_call_chart and update_put_chart
         pass
     
-    def on_option_chain_click(self, event):
-        """Handle click on option chain to update charts"""
+    def on_option_sheet_click(self, event):
+        """Handle click on option chain tksheet to update charts"""
         try:
-            selection = self.option_tree.selection()
+            # Get selected cell from sheet
+            selection = self.option_sheet.get_currently_selected()
             if not selection:
-                self.log_message("No row selected in option chain", "WARNING")
-                return
-                
-            item = selection[0]
-            values = self.option_tree.item(item, 'values')
-            
-            if not values or len(values) < 10:
-                self.log_message("Invalid row data in option chain", "WARNING")
+                self.log_message("No cell selected in option chain", "WARNING")
                 return
             
-            # Get strike from center column (index 9) - convert to int to match contract keys
-            strike = int(float(values[9]))
-            
-            # Determine if user clicked on call or put side based on column
-            region = self.option_tree.identify_region(event.x, event.y)
-            column = self.option_tree.identify_column(event.x)
-            
-            self.log_message(f"Clicked: region={region}, column={column}, strike={strike}", "INFO")
-            
-            if region == "cell":
-                col_index = int(column.replace('#', '')) - 1
-                
-                # Columns 0-8 are calls, 9 is strike, 10-17 are puts
-                if col_index < 9:
-                    # Clicked on call side
-                    contract_key = f"SPX_{strike}_C"
-                    self.log_message(f"Looking for call contract: {contract_key}", "INFO")
-                    
-                    if contract_key in self.market_data:
-                        # Create fresh contract with current expiration for chart data
-                        self.selected_call_contract = self.create_spxw_contract(float(strike), "C")
-                        self.log_message(f"✓ Selected CALL: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
-                        self.update_call_chart()
-                    else:
-                        self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
-                        self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
-                        
-                elif col_index > 9:
-                    # Clicked on put side
-                    contract_key = f"SPX_{strike}_P"
-                    self.log_message(f"Looking for put contract: {contract_key}", "INFO")
-                    
-                    if contract_key in self.market_data:
-                        # Create fresh contract with current expiration for chart data
-                        self.selected_put_contract = self.create_spxw_contract(float(strike), "P")
-                        self.log_message(f"✓ Selected PUT: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
-                        self.update_put_chart()
-                    else:
-                        self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
-                        self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
+            # Extract row and column from selection
+            # selection is typically (row, col, type) or ((row_start, col_start), (row_end, col_end))
+            if isinstance(selection, tuple):
+                if len(selection) >= 2 and isinstance(selection[0], int):
+                    row_idx, col_idx = selection[0], selection[1]
+                elif len(selection) == 2 and isinstance(selection[0], tuple):
+                    # Range selection - use first cell
+                    row_idx, col_idx = selection[0][0], selection[0][1]
                 else:
-                    self.log_message("Clicked on strike column - please click on call or put columns", "INFO")
-                        
+                    self.log_message("Invalid selection format", "WARNING")
+                    return
+            else:
+                self.log_message("Unable to parse selection", "WARNING")
+                return
+            
+            # Get strike from the selected row
+            # Find strike by row index from strike_to_row mapping
+            strike = None
+            for s, r_idx in self.strike_to_row.items():
+                if r_idx == row_idx:
+                    strike = s
+                    break
+            
+            if strike is None:
+                self.log_message(f"Could not determine strike for row {row_idx}", "WARNING")
+                return
+            
+            self.log_message(f"Clicked: row={row_idx}, column={col_idx}, strike={strike}", "INFO")
+            
+            # Determine if user clicked on call or put side
+            # Columns 0-8 are calls, 9 is strike, 10-17 are puts
+            if col_idx < 9:
+                # Clicked on call side
+                contract_key = f"SPX_{strike}_C"
+                self.log_message(f"Looking for call contract: {contract_key}", "INFO")
+                
+                if contract_key in self.market_data:
+                    # Create fresh contract with current expiration for chart data
+                    self.selected_call_contract = self.create_spxw_contract(float(strike), "C")
+                    self.log_message(f"✓ Selected CALL: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
+                    self.update_call_chart()
+                else:
+                    self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
+                    self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
+                    
+            elif col_idx > 9:
+                # Clicked on put side
+                contract_key = f"SPX_{strike}_P"
+                self.log_message(f"Looking for put contract: {contract_key}", "INFO")
+                
+                if contract_key in self.market_data:
+                    # Create fresh contract with current expiration for chart data
+                    self.selected_put_contract = self.create_spxw_contract(float(strike), "P")
+                    self.log_message(f"✓ Selected PUT: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
+                    self.update_put_chart()
+                else:
+                    self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
+                    self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
+            else:
+                self.log_message("Clicked on strike column - please click on call or put columns", "INFO")
+                    
         except Exception as e:
             self.log_message(f"Error handling option chain click: {e}", "ERROR")
             import traceback
             self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+    
+    def on_option_chain_click(self, event):
+        """DEPRECATED: Old Treeview click handler - replaced by on_option_sheet_click"""
+        # Kept for backwards compatibility, redirects to sheet handler
+        self.on_option_sheet_click(event)
     
     def show_call_loading(self):
         """Show loading spinner on call chart with animated rotation"""
