@@ -3895,32 +3895,34 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             rows.append(row)
             total_pnl += pnl
         
-        # Update sheet data
-        self.position_sheet.set_sheet_data(rows)
-        
-        # Re-apply column widths (tksheet resets them on set_sheet_data)
-        # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
-        for col_idx, width in enumerate([300, 60, 80, 80, 100, 80, 120, 100, 80]):
-            self.position_sheet.column_width(column=col_idx, width=width)
-        
-        # Color-code rows based on P&L
-        for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
-            pnl = pos['pnl']
+        # Only update sheet data if it has changed (prevents flashing)
+        current_data = self.position_sheet.get_sheet_data()
+        if current_data != rows:
+            self.position_sheet.set_sheet_data(rows)
             
-            # Determine row color
-            if pnl > 0:
-                fg_color = "#00FF00"  # Green for profit
-            elif pnl < 0:
-                fg_color = "#FF0000"  # Red for loss
-            else:
-                fg_color = "#FFFFFF"  # White for zero
+            # Re-apply column widths (tksheet resets them on set_sheet_data)
+            # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
+            for col_idx, width in enumerate([300, 60, 80, 80, 100, 80, 120, 100, 80]):
+                self.position_sheet.column_width(column=col_idx, width=width)
             
-            # Apply color to PnL columns (indices 4 and 5)
-            self.position_sheet.highlight_cells(row=row_idx, column=4, fg=fg_color, bg="#000000")
-            self.position_sheet.highlight_cells(row=row_idx, column=5, fg=fg_color, bg="#000000")
-            
-            # Style Close button: Red background, white text (index 8 - moved from 6 due to new columns)
-            self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
+            # Color-code rows based on P&L (only when data changes)
+            for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
+                pnl = pos['pnl']
+                
+                # Determine row color
+                if pnl > 0:
+                    fg_color = "#00FF00"  # Green for profit
+                elif pnl < 0:
+                    fg_color = "#FF0000"  # Red for loss
+                else:
+                    fg_color = "#FFFFFF"  # White for zero
+                
+                # Apply color to PnL columns (indices 4 and 5)
+                self.position_sheet.highlight_cells(row=row_idx, column=4, fg=fg_color, bg="#000000")
+                self.position_sheet.highlight_cells(row=row_idx, column=5, fg=fg_color, bg="#000000")
+                
+                # Style Close button: Red background, white text (index 8 - moved from 6 due to new columns)
+                self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"
