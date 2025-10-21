@@ -119,10 +119,10 @@ def calculate_greeks(option_type: str, spot_price: float, strike: float,
         vega = spot_price * math.sqrt(time_to_expiry) * n_d1 / 100
         
         return {
-            'delta': round(delta, 4),
-            'gamma': round(gamma, 4),
-            'theta': round(theta, 4),
-            'vega': round(vega, 4),
+            'delta': round(float(delta), 4),
+            'gamma': round(float(gamma), 4),
+            'theta': round(float(theta), 4),
+            'vega': round(float(vega), 4),
             'iv': round(volatility, 4)
         }
         
