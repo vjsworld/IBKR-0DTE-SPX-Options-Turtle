@@ -222,6 +222,28 @@ class IBKRWrapper(EWrapper):
         elif errorCode == 354:  # Requested market data is not subscribed
             self.app.log_message(f"Market data not available for reqId {reqId}", "WARNING")
         
+        # Order rejection errors
+        elif errorCode in [201, 202, 203, 204, 205, 206, 207]:  # Order rejected
+            self.app.log_message(f"ORDER REJECTED (orderId={reqId}): {errorString}", "ERROR")
+            # Remove from pending orders if exists
+            if reqId in self.app.pending_orders:
+                del self.app.pending_orders[reqId]
+            # Remove from manual orders tracking
+            if reqId in self.app.manual_orders:
+                del self.app.manual_orders[reqId]
+            # Update order sheet
+            self.app.update_order_in_tree(reqId, status="REJECTED", price=0)
+        elif errorCode == 110:  # Price is out of range
+            self.app.log_message(f"ORDER PRICE OUT OF RANGE (orderId={reqId}): {errorString}", "ERROR")
+        elif errorCode == 200:  # No security definition found
+            self.app.log_message(f"ORDER ERROR - Security not found (orderId={reqId}): {errorString}", "ERROR")
+            # Remove from pending orders if exists
+            if reqId in self.app.pending_orders:
+                del self.app.pending_orders[reqId]
+            if reqId in self.app.manual_orders:
+                del self.app.manual_orders[reqId]
+            self.app.update_order_in_tree(reqId, status="REJECTED", price=0)
+        
         # Historical data errors
         elif errorCode == 162:  # Historical market data Service error
             self.app.log_message(f"Historical data permission issue for reqId {reqId}: {errorString}", "WARNING")
@@ -233,8 +255,6 @@ class IBKRWrapper(EWrapper):
                     f"Paper trading accounts may have limited historical data access.",
                     "WARNING"
                 )
-        elif errorCode == 200:  # No security definition found
-            self.app.log_message(f"Security definition not found for reqId {reqId}: {errorString}", "WARNING")
         elif errorCode == 366:  # No historical data query found
             if reqId in self.app.historical_data_requests:
                 contract_key = self.app.historical_data_requests[reqId]
@@ -2979,6 +2999,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             contract.currency = "USD"
             self.log_message(f"Set contract.currency = USD", "INFO")
         
+        # Log detailed contract information before placing order
+        self.log_message(f"CONTRACT DETAILS for order #{self.next_order_id}:", "INFO")
+        self.log_message(f"  Symbol: {contract.symbol}", "INFO")
+        self.log_message(f"  SecType: {contract.secType}", "INFO")
+        self.log_message(f"  Exchange: {contract.exchange}", "INFO")
+        self.log_message(f"  Currency: {contract.currency}", "INFO")
+        self.log_message(f"  Strike: {contract.strike}", "INFO")
+        self.log_message(f"  Right: {contract.right}", "INFO")
+        self.log_message(f"  LastTradeDateOrContractMonth: {contract.lastTradeDateOrContractMonth}", "INFO")
+        self.log_message(f"  Multiplier: {contract.multiplier}", "INFO")
+        self.log_message(f"  TradingClass: {contract.tradingClass}", "INFO")
+        
         order = Order()
         order.action = action
         order.totalQuantity = quantity
@@ -3004,8 +3036,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             'timestamp': datetime.now()
         }
         
-        self.placeOrder(order_id, contract, order)
-        self.pending_orders[order_id] = (contract_key, action, quantity)
+        # Place the order and log any immediate errors
+        try:
+            self.placeOrder(order_id, contract, order)
+            self.pending_orders[order_id] = (contract_key, action, quantity)
+            self.log_message(f"✓ placeOrder() call completed for order #{order_id}", "SUCCESS")
+        except Exception as e:
+            self.log_message(f"✗ FAILED to place order #{order_id}: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            raise
         
         self.log_message(
             f"Manual {action} order #{order_id}: {contract_key} x{quantity} @ ${initial_price:.2f} (mid-price)",
