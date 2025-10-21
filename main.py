@@ -1022,7 +1022,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths using column_width method
         # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
-        for col_idx, width in enumerate([300, 60, 80, 80, 100, 80, 120, 100, 80]):
+        for col_idx, width in enumerate([180, 50, 80, 80, 100, 80, 100, 90, 70]):
             self.position_sheet.column_width(column=col_idx, width=width)
         
         # Set column alignments: left for Contract (0), center for all others
@@ -1066,11 +1066,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths
         self.order_sheet.column_width(column=0, width=80)   # Order ID
-        self.order_sheet.column_width(column=1, width=300)  # Contract (widened for full name)
+        self.order_sheet.column_width(column=1, width=180)  # Contract (narrower)
         self.order_sheet.column_width(column=2, width=60)   # Action
-        self.order_sheet.column_width(column=3, width=60)   # Qty
+        self.order_sheet.column_width(column=3, width=50)   # Qty
         self.order_sheet.column_width(column=4, width=80)   # Price
-        self.order_sheet.column_width(column=5, width=120)  # Status
+        self.order_sheet.column_width(column=5, width=100)  # Status
         self.order_sheet.column_width(column=6, width=80)   # Cancel
         
         # Set column alignments: left for Contract (1), center for all others
@@ -3840,15 +3840,6 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Update sheet
             self.order_sheet.set_sheet_data(current_data)
             
-            # Re-apply column widths (tksheet resets them on set_sheet_data)
-            self.order_sheet.column_width(column=0, width=80)   # Order ID
-            self.order_sheet.column_width(column=1, width=300)  # Contract
-            self.order_sheet.column_width(column=2, width=60)   # Action
-            self.order_sheet.column_width(column=3, width=60)   # Qty
-            self.order_sheet.column_width(column=4, width=80)   # Price
-            self.order_sheet.column_width(column=5, width=80)   # Status
-            self.order_sheet.column_width(column=6, width=80)   # Cancel
-            
             # Apply yellow background to Cancel button (column 6)
             row_idx = len(current_data) - 1
             self.order_sheet.highlight_cells(row=row_idx, column=6, fg="#000000", bg="#FFFF00")
@@ -3878,15 +3869,6 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     
                     # Update sheet
                     self.order_sheet.set_sheet_data(data)
-                    
-                    # Re-apply column widths (tksheet resets them on set_sheet_data)
-                    self.order_sheet.column_width(column=0, width=80)   # Order ID
-                    self.order_sheet.column_width(column=1, width=300)  # Contract
-                    self.order_sheet.column_width(column=2, width=60)   # Action
-                    self.order_sheet.column_width(column=3, width=60)   # Qty
-                    self.order_sheet.column_width(column=4, width=80)   # Price
-                    self.order_sheet.column_width(column=5, width=80)   # Status
-                    self.order_sheet.column_width(column=6, width=80)   # Cancel
                     break
                     
         except Exception as e:
@@ -3955,13 +3937,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     break
         
         if data_changed:
-            # Significant data changed - do full update with width reset
+            # Significant data changed - do full update
             self.position_sheet.set_sheet_data(rows)
-            
-            # Re-apply column widths (tksheet resets them on set_sheet_data)
-            # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
-            for col_idx, width in enumerate([300, 60, 80, 80, 100, 80, 120, 100, 80]):
-                self.position_sheet.column_width(column=col_idx, width=width)
             
             # Color-code rows based on P&L (only when data changes)
             for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
