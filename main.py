@@ -728,6 +728,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Expiration management
         self.expiry_offset = 0  # 0 = today (0DTE), 1 = next expiry, etc.
         self.current_expiry = self.calculate_expiry_date(self.expiry_offset)
+        # Note: GUI doesn't exist yet during __init__, so we can't log to it here
+        # Expiration will be logged when GUI is ready
         
         # Option chain
         self.spx_contracts = []  # List of all option contracts
@@ -947,7 +949,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             chain_header, 
             textvariable=self.expiry_offset_var,
             values=self.get_expiration_options(),
-            width=20, 
+            width=25, 
             state="readonly"
         )
         self.expiry_dropdown.pack(side=RIGHT, padx=5)
@@ -1930,20 +1932,20 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def calculate_expiry_date(self, offset: int) -> str:
         """
         Calculate expiration date based on offset.
-        offset = 0: Today (0DTE) - if today is Mon/Wed/Fri
+        offset = 0: Today (0DTE) - every weekday
         offset = 1: Next trading day expiration
         offset = 2: Day after next expiration, etc.
         
-        For SPX options, expirations are Mon/Wed/Fri.
+        SPX options now have DAILY expirations (Monday-Friday).
         """
         from datetime import timedelta
         
         current_date = datetime.now()
         target_date = current_date
         
-        # SPX has options expiring Monday, Wednesday, Friday
-        # 0 = Monday, 2 = Wednesday, 4 = Friday
-        expiry_days = [0, 2, 4]
+        # SPX has daily expirations Monday-Friday
+        # 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday
+        expiry_days = [0, 1, 2, 3, 4]
         
         days_checked = 0
         expirations_found = 0
@@ -2052,6 +2054,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         contract.right = right  # "C" or "P"
         contract.lastTradeDateOrContractMonth = self.current_expiry
         contract.multiplier = "100"
+        
+        # DIAGNOSTIC: Log contract creation to verify expiration
+        if not hasattr(self, '_contract_creation_logged'):
+            self._contract_creation_logged = True
+            self.log_message(f"Creating contracts with expiration: {self.current_expiry}", "INFO")
+        
         return contract
     
     def refresh_option_chain(self):
@@ -3018,13 +3026,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     # DEBUG: Log fallback to last price
                     # self.log_message(f"Using last price for {contract_key}: ${current_price:.2f} (no bid/ask)", "WARNING")
             elif current_price is None:
-                # DEBUG: Log if market data not found - check what keys exist
-                available_keys = list(self.market_data.keys())[:5]  # Show first 5 keys
-                self.log_message(
-                    f"No market data for position {contract_key}. "
-                    f"Have {len(self.market_data)} entries. Sample keys: {available_keys}",
-                    "WARNING"
-                )
+                # Market data not found - use last known price silently
+                # (Don't spam warnings for positions with different expirations than loaded chain)
                 current_price = pos.get('currentPrice', pos['avgCost'])
             
             if current_price:
@@ -3169,6 +3172,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             contract_key, contract, ask_price = result
             
+            # DIAGNOSTIC: Log the contract expiration to verify it matches selected expiry
+            self.log_message(f"Contract found: {contract_key}", "INFO")
+            self.log_message(f"Contract expiration: {contract.lastTradeDateOrContractMonth}", "INFO")
+            self.log_message(f"Expected expiration (current_expiry): {self.current_expiry}", "INFO")
+            
             # Calculate mid price for order
             mid_price = self.calculate_mid_price(contract_key)
             if mid_price == 0:
@@ -3225,6 +3233,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 return
             
             contract_key, contract, ask_price = result
+            
+            # DIAGNOSTIC: Log the contract expiration to verify it matches selected expiry
+            self.log_message(f"Contract found: {contract_key}", "INFO")
+            self.log_message(f"Contract expiration: {contract.lastTradeDateOrContractMonth}", "INFO")
+            self.log_message(f"Expected expiration (current_expiry): {self.current_expiry}", "INFO")
             
             # Calculate mid price for order
             mid_price = self.calculate_mid_price(contract_key)
@@ -3387,7 +3400,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             # Place sell order (opposite of entry)
             action = "SELL"
-            quantity = abs(pos['position'])
+            quantity = int(abs(pos['position']))  # Ensure integer quantity
             
             # Ensure contract has all required fields for order placement
             exit_contract = pos['contract']
@@ -4074,8 +4087,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Find and update the row
             for i, row in enumerate(data):
                 if row and len(row) > 0 and str(row[0]) == str(order_id):
-                    # If filled/cancelled, remove the row (requires set_sheet_data)
-                    if status in ["Filled", "Cancelled"]:
+                    # If filled/cancelled/submitted/inactive, remove the row (requires set_sheet_data)
+                    # "Inactive" means rejected (exchange closed, invalid order, etc.)
+                    if status in ["Filled", "Cancelled", "Submitted", "Inactive"]:
                         data.pop(i)
                         # Update sheet (row count changed)
                         self.order_sheet.set_sheet_data(data)
@@ -4226,10 +4240,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         """
         timestamp = datetime.now().strftime("%H:%M:%S")
         
-        # GUI log entry (can include emojis)
-        log_entry = f"[{timestamp}] {message}\n"
-        self.log_text.insert(tk.END, log_entry, level)
-        self.log_text.see(tk.END)
+        # GUI log entry (can include emojis) - only if GUI exists
+        if hasattr(self, 'log_text') and self.log_text:
+            log_entry = f"[{timestamp}] {message}\n"
+            self.log_text.insert(tk.END, log_entry, level)
+            self.log_text.see(tk.END)
         
         # Console log (no emojis, plain text)
         console_message = f"[{timestamp}] [{level}] {message}"
@@ -4246,9 +4261,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         else:  # INFO or any other level
             file_logger.info(message)
         
-        # Keep log size manageable
-        if int(self.log_text.index('end-1c').split('.')[0]) > 1000:
-            self.log_text.delete('1.0', '500.0')
+        # Keep log size manageable - only if GUI exists
+        if hasattr(self, 'log_text') and self.log_text:
+            if int(self.log_text.index('end-1c').split('.')[0]) > 1000:
+                self.log_text.delete('1.0', '500.0')
     
     # ========================================================================
     # MAIN LOOP
