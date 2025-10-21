@@ -3837,8 +3837,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             new_row = [str(order_id), contract_key, action, str(quantity), f"${price:.2f}", status, "Cancel"]
             current_data.append(new_row)
             
-            # Update sheet
+            # Update sheet (unavoidable when adding rows)
             self.order_sheet.set_sheet_data(current_data)
+            
+            # Re-apply column widths (only when row count changes)
+            for col_idx, width in enumerate([80, 180, 60, 50, 80, 100, 80]):
+                self.order_sheet.column_width(column=col_idx, width=width)
             
             # Apply yellow background to Cancel button (column 6)
             row_idx = len(current_data) - 1
@@ -3856,19 +3860,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Find and update the row
             for i, row in enumerate(data):
                 if row and len(row) > 0 and str(row[0]) == str(order_id):
-                    # Update price if provided
-                    if price is not None:
-                        row[4] = f"${price:.2f}"
-                    
-                    # Update status
-                    row[5] = status
-                    
-                    # If filled/cancelled, remove the row
+                    # If filled/cancelled, remove the row (requires set_sheet_data)
                     if status in ["Filled", "Cancelled"]:
                         data.pop(i)
-                    
-                    # Update sheet
-                    self.order_sheet.set_sheet_data(data)
+                        # Update sheet (row count changed)
+                        self.order_sheet.set_sheet_data(data)
+                        # Re-apply column widths (only when row count changes)
+                        for col_idx, width in enumerate([80, 180, 60, 50, 80, 100, 80]):
+                            self.order_sheet.column_width(column=col_idx, width=width)
+                    else:
+                        # Update cells individually (preserves column widths)
+                        if price is not None:
+                            self.order_sheet.set_cell_data(i, 4, f"${price:.2f}")
+                        self.order_sheet.set_cell_data(i, 5, status)
                     break
                     
         except Exception as e:
@@ -3917,30 +3921,22 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             rows.append(row)
             total_pnl += pnl
         
-        # Compare data WITHOUT TimeSpan column (index 7) to avoid flashing
-        # TimeSpan changes every second but doesn't require full sheet redraw
+        # Get current sheet size
         current_data = self.position_sheet.get_sheet_data()
+        current_row_count = len(current_data)
+        new_row_count = len(rows)
         
-        # Check if significant data changed (excluding TimeSpan column)
-        data_changed = False
-        if len(current_data) != len(rows):
-            data_changed = True
-        else:
-            for i, (current_row, new_row) in enumerate(zip(current_data, rows)):
-                # Compare all columns except TimeSpan (index 7)
-                for col_idx in [0, 1, 2, 3, 4, 5, 6, 8]:
-                    if col_idx < len(current_row) and col_idx < len(new_row):
-                        if current_row[col_idx] != new_row[col_idx]:
-                            data_changed = True
-                            break
-                if data_changed:
-                    break
-        
-        if data_changed:
-            # Significant data changed - do full update
+        # Handle row count changes (positions added/removed)
+        if current_row_count != new_row_count:
+            # Row count changed - need to use set_sheet_data (but this is rare)
+            # This only happens when positions are opened or closed
             self.position_sheet.set_sheet_data(rows)
             
-            # Color-code rows based on P&L (only when data changes)
+            # Re-apply column widths after set_sheet_data (unavoidable when row count changes)
+            for col_idx, width in enumerate([180, 50, 80, 80, 100, 80, 100, 90, 70]):
+                self.position_sheet.column_width(column=col_idx, width=width)
+            
+            # Color-code rows
             for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
                 pnl = pos['pnl']
                 
@@ -3956,13 +3952,33 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.position_sheet.highlight_cells(row=row_idx, column=4, fg=fg_color, bg="#000000")
                 self.position_sheet.highlight_cells(row=row_idx, column=5, fg=fg_color, bg="#000000")
                 
-                # Style Close button: Red background, white text (index 8 - moved from 6 due to new columns)
+                # Style Close button: Red background, white text (index 8)
                 self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
         else:
-            # Only TimeSpan changed - update those cells individually (no flashing)
+            # Same number of rows - update cells individually (preserves column widths)
             for row_idx, row in enumerate(rows):
-                time_span_str = row[7]  # TimeSpan column
-                self.position_sheet.set_cell_data(row_idx, 7, time_span_str)
+                for col_idx, value in enumerate(row):
+                    # Update each cell individually
+                    self.position_sheet.set_cell_data(row_idx, col_idx, value)
+            
+            # Update cell colors for PnL columns
+            for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
+                pnl = pos['pnl']
+                
+                # Determine row color
+                if pnl > 0:
+                    fg_color = "#00FF00"  # Green for profit
+                elif pnl < 0:
+                    fg_color = "#FF0000"  # Red for loss
+                else:
+                    fg_color = "#FFFFFF"  # White for zero
+                
+                # Apply color to PnL columns (indices 4 and 5)
+                self.position_sheet.highlight_cells(row=row_idx, column=4, fg=fg_color, bg="#000000")
+                self.position_sheet.highlight_cells(row=row_idx, column=5, fg=fg_color, bg="#000000")
+                
+                # Style Close button: Red background, white text (index 8)
+                self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"
