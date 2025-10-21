@@ -222,6 +222,9 @@ class IBKRWrapper(EWrapper):
                 # Update position P&L if this is a held position
                 if contract_key in self.app.positions:
                     self.app.update_position_pnl(contract_key, price)
+                    
+            elif tickType == 9:  # CLOSE PRICE (previous day's close)
+                self.app.market_data[contract_key]['prev_close'] = price
     
     def tickSize(self, reqId: TickerId, tickType: TickType, size: int):
         """Receives real-time size updates"""
@@ -762,22 +765,26 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             'negative': '#ff0000',        # Bright red for negative values
             'neutral': '#c0c0c0',         # Light gray for neutral
             
+            # CHANGE % backgrounds (like IB TWS)
+            'positive_bg': '#003300',     # Dark green background for positive change
+            'negative_bg': '#330000',     # Dark red background for negative change
+            
             # Special column backgrounds (like IB's colored columns)
             'delta_bg': '#1a1a2a',        # Slight blue tint for delta columns
             'volume_bg': '#1a1a1a'        # Slight gray for volume
         }
         
-        # Column headers matching IBKR layout
-        # CALLS: Bid, Ask, Last, Volume, Gamma, Vega, Theta, Delta, Imp Vol
+        # Column headers matching IBKR layout with CHANGE % column
+        # CALLS: Bid, Ask, Last, CHANGE %, Volume, Gamma, Vega, Theta, Delta, Imp Vol
         # STRIKE (center)
-        # PUTS: Delta, Theta, Vega, Gamma, Volume, Last, Ask, Bid
+        # PUTS: Delta, Theta, Vega, Gamma, Volume, CHANGE %, Last, Ask, Bid
         headers = [
-            # Call side (left) - 9 columns
-            "Bid", "Ask", "Last", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol",
+            # Call side (left) - 10 columns (added CHANGE %)
+            "Bid", "Ask", "Last", "CHANGE %", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol",
             # Strike (center) - 1 column
             "● STRIKE ●",
-            # Put side (right) - 8 columns
-            "Delta", "Theta", "Vega", "Gamma", "Volume", "Last", "Ask", "Bid"
+            # Put side (right) - 9 columns (added CHANGE %)
+            "Delta", "Theta", "Vega", "Gamma", "Volume", "CHANGE %", "Last", "Ask", "Bid"
         ]
         
         # Create tksheet with professional configuration
@@ -834,13 +841,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Store TWS colors for later use in cell formatting
         self.tws_colors = TWS_COLORS
         
-        # Store column indices for easy reference
+        # Store column indices for easy reference (updated with CHANGE % column)
         self.sheet_cols = {
-            'c_bid': 0, 'c_ask': 1, 'c_last': 2, 'c_vol': 3,
-            'c_gamma': 4, 'c_vega': 5, 'c_theta': 6, 'c_delta': 7, 'c_iv': 8,
-            'strike': 9,
-            'p_delta': 10, 'p_theta': 11, 'p_vega': 12, 'p_gamma': 13,
-            'p_vol': 14, 'p_last': 15, 'p_ask': 16, 'p_bid': 17
+            'c_bid': 0, 'c_ask': 1, 'c_last': 2, 'c_change': 3, 'c_vol': 4,
+            'c_gamma': 5, 'c_vega': 6, 'c_theta': 7, 'c_delta': 8, 'c_iv': 9,
+            'strike': 10,
+            'p_delta': 11, 'p_theta': 12, 'p_vega': 13, 'p_gamma': 14,
+            'p_vol': 15, 'p_change': 16, 'p_last': 17, 'p_ask': 18, 'p_bid': 19
         }
         
         # Bottom panel: Positions/Orders side-by-side, then Charts, then Log
@@ -1942,7 +1949,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     'contract': strike_data['call_contract'],
                     'right': 'C',
                     'strike': strike,
-                    'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                    'bid': 0, 'ask': 0, 'last': 0, 'prev_close': 0, 'volume': 0,
                     'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0,
                     'row_index': row_idx  # Store row index instead of tree_item
                 }
@@ -1964,7 +1971,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     'contract': strike_data['put_contract'],
                     'right': 'P',
                     'strike': strike,
-                    'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                    'bid': 0, 'ask': 0, 'last': 0, 'prev_close': 0, 'volume': 0,
                     'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0,
                     'row_index': row_idx  # Store row index instead of tree_item
                 }
@@ -1975,11 +1982,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.reqMktData(req_id, strike_data['put_contract'], "106", False, False, [])
             
             # Create sheet row with call on left, strike in center, put on right
-            # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
+            # Format: C_Bid, C_Ask, C_Last, C_CHANGE%, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_CHANGE%, P_Last, P_Ask, P_Bid
             row_data = [
-                "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00", "0.00", "0.00",  # Call data
-                f"{strike:.2f}",  # Strike
-                "0.00", "0.00", "0.00", "0.00", "0", "0.00", "0.00", "0.00"  # Put data
+                "0.00", "0.00", "0.00", "0.00%", "0", "0.00", "0.00", "0.00", "0.00", "0.00",  # Call data (10 columns)
+                f"{strike:.2f}",  # Strike (1 column)
+                "0.00", "0.00", "0.00", "0.00", "0", "0.00%", "0.00", "0.00", "0.00"  # Put data (9 columns)
             ]
             
             sheet_data.append(row_data)
@@ -2113,12 +2120,27 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 # Determine row background based on ITM/OTM status
                 row_bg = get_row_bg_color(strike)
                 
+                # Calculate CHANGE % for call
+                call_change_pct = 0.0
+                call_change_str = "0.00%"
+                if call_data.get('last', 0) > 0 and call_data.get('prev_close', 0) > 0:
+                    call_change_pct = ((call_data['last'] - call_data['prev_close']) / call_data['prev_close']) * 100
+                    call_change_str = f"{call_change_pct:+.2f}%"  # Show sign (+/-)
+                
+                # Calculate CHANGE % for put
+                put_change_pct = 0.0
+                put_change_str = "0.00%"
+                if put_data.get('last', 0) > 0 and put_data.get('prev_close', 0) > 0:
+                    put_change_pct = ((put_data['last'] - put_data['prev_close']) / put_data['prev_close']) * 100
+                    put_change_str = f"{put_change_pct:+.2f}%"  # Show sign (+/-)
+                
                 # Build row values
-                # Call columns (0-8)
+                # Call columns (0-9): Bid, Ask, Last, CHANGE%, Volume, Gamma, Vega, Theta, Delta, IV
                 call_values = [
                     safe_format(call_data.get('bid'), ".2f"),
                     safe_format(call_data.get('ask'), ".2f"),
                     safe_format(call_data.get('last'), ".2f"),
+                    call_change_str,  # CHANGE % at index 3
                     safe_format(call_data.get('volume'), "int"),
                     safe_format(call_data.get('gamma'), ".4f"),
                     safe_format(call_data.get('vega'), ".4f"),
@@ -2127,66 +2149,77 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     safe_format(call_data.get('iv'), ".2f")
                 ]
                 
-                # Strike column (9)
+                # Strike column (10)
                 strike_value = f"{strike:.2f}"
                 
-                # Put columns (10-17)
+                # Put columns (11-19): Delta, Theta, Vega, Gamma, Volume, CHANGE%, Last, Ask, Bid
                 put_values = [
                     safe_format(put_data.get('delta'), ".4f"),
                     safe_format(put_data.get('theta'), ".4f"),
                     safe_format(put_data.get('vega'), ".4f"),
                     safe_format(put_data.get('gamma'), ".4f"),
                     safe_format(put_data.get('volume'), "int"),
+                    put_change_str,  # CHANGE % at index 5
                     safe_format(put_data.get('last'), ".2f"),
                     safe_format(put_data.get('ask'), ".2f"),
                     safe_format(put_data.get('bid'), ".2f")
                 ]
                 
                 # Update cells with values
-                # Call columns mapping: 0=bid, 1=ask, 2=last, 3=volume, 4=gamma, 5=vega, 6=theta, 7=delta, 8=iv
-                greek_keys_call = ['bid', 'ask', 'last', 'volume', 'gamma', 'vega', 'theta', 'delta', 'iv']
+                # Call columns mapping: 0=bid, 1=ask, 2=last, 3=change%, 4=volume, 5=gamma, 6=vega, 7=theta, 8=delta, 9=iv
+                greek_keys_call = ['bid', 'ask', 'last', 'change%', 'volume', 'gamma', 'vega', 'theta', 'delta', 'iv']
                 
                 for col_idx, val in enumerate(call_values):
                     cell_updates.append((row_idx, col_idx, val))
                     
-                    # Determine background color for special columns
-                    cell_bg = row_bg
-                    if col_idx == 7:  # Delta column - slight blue tint
-                        cell_bg = self.tws_colors.get('delta_bg', row_bg)
-                    elif col_idx == 3:  # Volume column - slight gray tint
-                        cell_bg = self.tws_colors.get('volume_bg', row_bg)
-                    
-                    # Apply colors: positive/negative for greeks, default otherwise
-                    if col_idx in [4, 5, 6, 7]:  # Gamma, Vega, Theta, Delta
-                        fg_color = get_value_color(call_data.get(greek_keys_call[col_idx]))
+                    # CHANGE % column gets green/red background
+                    if col_idx == 3:  # CHANGE % column
+                        if call_change_pct > 0:
+                            cell_bg = self.tws_colors['positive_bg']  # Green background
+                            fg_color = self.tws_colors['positive']  # Green text
+                        elif call_change_pct < 0:
+                            cell_bg = self.tws_colors['negative_bg']  # Red background
+                            fg_color = self.tws_colors['negative']  # Red text
+                        else:
+                            cell_bg = self.tws_colors['bg']  # Black
+                            fg_color = self.tws_colors['fg']  # White
                         cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
+                    # All other cells: pure black background
+                    elif col_idx in [5, 6, 7, 8]:  # Gamma, Vega, Theta, Delta - colored text
+                        fg_color = get_value_color(call_data.get(greek_keys_call[col_idx]))
+                        cell_formats.append((row_idx, col_idx, fg_color, self.tws_colors['bg']))
                     else:
-                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], cell_bg))
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], self.tws_colors['bg']))
                 
                 # Strike column (bold, centered, blue background like IB)
-                cell_updates.append((row_idx, 9, strike_value))
-                cell_formats.append((row_idx, 9, self.tws_colors['strike_fg'], self.tws_colors['strike_bg']))
+                cell_updates.append((row_idx, 10, strike_value))
+                cell_formats.append((row_idx, 10, self.tws_colors['strike_fg'], self.tws_colors['strike_bg']))
                 
-                # Put columns mapping: 0=delta, 1=theta, 2=vega, 3=gamma, 4=volume, 5=last, 6=ask, 7=bid
-                greek_keys_put = ['delta', 'theta', 'vega', 'gamma', 'volume', 'last', 'ask', 'bid']
+                # Put columns mapping: 0=delta, 1=theta, 2=vega, 3=gamma, 4=volume, 5=change%, 6=last, 7=ask, 8=bid
+                greek_keys_put = ['delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
                 
                 for col_offset, val in enumerate(put_values):
-                    col_idx = 10 + col_offset
+                    col_idx = 11 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
                     
-                    # Determine background color for special columns
-                    cell_bg = row_bg
-                    if col_offset == 0:  # Delta column - slight blue tint
-                        cell_bg = self.tws_colors.get('delta_bg', row_bg)
-                    elif col_offset == 4:  # Volume column - slight gray tint
-                        cell_bg = self.tws_colors.get('volume_bg', row_bg)
-                    
-                    # Apply colors: positive/negative for greeks, default otherwise
-                    if col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma
-                        fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
+                    # CHANGE % column gets green/red background
+                    if col_offset == 5:  # CHANGE % column
+                        if put_change_pct > 0:
+                            cell_bg = self.tws_colors['positive_bg']  # Green background
+                            fg_color = self.tws_colors['positive']  # Green text
+                        elif put_change_pct < 0:
+                            cell_bg = self.tws_colors['negative_bg']  # Red background
+                            fg_color = self.tws_colors['negative']  # Red text
+                        else:
+                            cell_bg = self.tws_colors['bg']  # Black
+                            fg_color = self.tws_colors['fg']  # White
                         cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
+                    # All other cells: pure black background
+                    elif col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma - colored text
+                        fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
+                        cell_formats.append((row_idx, col_idx, fg_color, self.tws_colors['bg']))
                     else:
-                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], cell_bg))
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], self.tws_colors['bg']))
             
             # Apply all cell updates in batch
             for row, col, value in cell_updates:
