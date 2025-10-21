@@ -3948,15 +3948,92 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # MAIN LOOP
     # ========================================================================
     
+    def cleanup_all_connections(self):
+        """Comprehensive cleanup of all IBKR connections, subscriptions, and threads"""
+        self.log_message("Starting comprehensive cleanup...", "INFO")
+        
+        try:
+            # Cancel all market data subscriptions using market_data_map (reqId -> contract_key)
+            if hasattr(self, 'market_data_map') and self.market_data_map:
+                self.log_message(f"Cancelling {len(self.market_data_map)} market data subscriptions...", "INFO")
+                for req_id in list(self.market_data_map.keys()):
+                    try:
+                        self.cancelMktData(req_id)
+                    except Exception as e:
+                        pass  # Ignore errors during cleanup
+                self.market_data_map.clear()
+                self.subscribed_contracts.clear()
+            
+            # Cancel all historical data requests
+            if hasattr(self, 'historical_data_requests') and self.historical_data_requests:
+                self.log_message(f"Cancelling {len(self.historical_data_requests)} historical data requests...", "INFO")
+                for req_id in list(self.historical_data_requests.keys()):
+                    try:
+                        self.cancelHistoricalData(req_id)
+                    except Exception as e:
+                        pass  # Ignore errors during cleanup
+                self.historical_data_requests.clear()
+            
+            # Cancel position subscription
+            try:
+                self.log_message("Cancelling position subscription...", "INFO")
+                self.cancelPositions()
+            except Exception as e:
+                pass  # Ignore errors during cleanup
+            
+            # Cancel any pending orders
+            if hasattr(self, 'pending_orders') and self.pending_orders:
+                self.log_message(f"Cancelling {len(self.pending_orders)} pending orders...", "INFO")
+                for order_id in list(self.pending_orders.keys()):
+                    try:
+                        self.cancelOrder(order_id)
+                    except Exception as e:
+                        pass  # Ignore errors during cleanup
+                self.pending_orders.clear()
+            
+            # Disconnect from IBKR
+            try:
+                self.log_message("Disconnecting from IBKR...", "INFO")
+                EClient.disconnect(self)
+            except Exception as e:
+                pass  # Ignore errors during cleanup
+            
+            # Stop the API thread
+            self.running = False
+            if hasattr(self, 'api_thread') and self.api_thread and self.api_thread.is_alive():
+                self.log_message("Waiting for API thread to terminate...", "INFO")
+                self.api_thread.join(timeout=2.0)
+                if self.api_thread.is_alive():
+                    self.log_message("API thread did not terminate cleanly (timeout)", "WARNING")
+                else:
+                    self.log_message("API thread terminated successfully", "SUCCESS")
+            
+            self.connection_state = ConnectionState.DISCONNECTED
+            self.log_message("Cleanup completed successfully", "SUCCESS")
+            
+        except Exception as e:
+            self.log_message(f"Error during cleanup: {str(e)}", "ERROR")
+    
     def on_closing(self):
-        """Handle window closing"""
+        """Handle window closing - properly cleanup and exit"""
         if not self.root:
             return
         if messagebox.askokcancel("Quit", "Do you want to quit?"):
-            self.running = False
+            # Comprehensive cleanup of all IBKR connections
             if self.connection_state == ConnectionState.CONNECTED:
-                self.disconnect_from_ib()
+                self.cleanup_all_connections()
+            else:
+                # Still stop the API thread even if not connected
+                self.running = False
+                if hasattr(self, 'api_thread') and self.api_thread and self.api_thread.is_alive():
+                    self.api_thread.join(timeout=1.0)
+            
+            # Destroy the GUI window
             self.root.destroy()
+            
+            # Force exit the Python process
+            import sys
+            sys.exit(0)
     
     def run_gui(self):
         """Start the GUI main loop"""
@@ -3986,8 +4063,20 @@ if __name__ == "__main__":
         
         app.run_gui()
         
+        # Normal exit after GUI closes
+        print("[SHUTDOWN] Application closed normally")
+        import sys
+        sys.exit(0)
+        
+    except KeyboardInterrupt:
+        print("\n[SHUTDOWN] Application interrupted by user (Ctrl+C)")
+        import sys
+        sys.exit(0)
+        
     except Exception as e:
         print(f"[FATAL ERROR] Application crashed: {e}")
         import traceback
         traceback.print_exc()
         input("Press Enter to exit...")
+        import sys
+        sys.exit(1)
