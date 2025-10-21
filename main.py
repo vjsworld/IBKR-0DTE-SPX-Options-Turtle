@@ -419,11 +419,15 @@ class IBKRWrapper(EWrapper):
                 self.app.log_message("Updating call chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_call_chart)
+                    # Hide loading spinner after chart update
+                    self.app.root.after(200, self.app.hide_call_loading)
             # Check if this data is for the currently selected put contract (with expiration)
             elif self.app.selected_put_contract and contract_key == f"SPX_{self.app.selected_put_contract.strike}_P_{self.app.current_expiry}":
                 self.app.log_message("Updating put chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_put_chart)
+                    # Hide loading spinner after chart update
+                    self.app.root.after(200, self.app.hide_put_loading)
         else:
             self.app.log_message(f"Historical data end for unknown reqId: {reqId}", "WARNING")
 
@@ -1533,7 +1537,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'strikes_above': self.strikes_above,
                 'strikes_below': self.strikes_below,
                 'chain_refresh_interval': self.chain_refresh_interval,
-                'strategy_enabled': self.strategy_enabled
+                'strategy_enabled': self.strategy_enabled,
+                # Chart settings
+                'call_days': self.call_days_var.get(),
+                'call_timeframe': self.call_timeframe_var.get(),
+                'put_days': self.put_days_var.get(),
+                'put_timeframe': self.put_timeframe_var.get()
             }
             
             with open('settings.json', 'w') as f:
@@ -1561,6 +1570,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.chain_refresh_interval = settings.get('chain_refresh_interval', 
                                                           self.chain_refresh_interval)
                 self.strategy_enabled = settings.get('strategy_enabled', False)
+                
+                # Restore chart settings if StringVars exist
+                if hasattr(self, 'call_days_var'):
+                    self.call_days_var.set(settings.get('call_days', '1'))
+                if hasattr(self, 'call_timeframe_var'):
+                    self.call_timeframe_var.set(settings.get('call_timeframe', '1 min'))
+                if hasattr(self, 'put_days_var'):
+                    self.put_days_var.set(settings.get('put_days', '5'))
+                if hasattr(self, 'put_timeframe_var'):
+                    self.put_timeframe_var.set(settings.get('put_timeframe', '1 min'))
                 
                 self.log_message("Settings loaded successfully", "SUCCESS")
         except Exception as e:
@@ -1959,9 +1978,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 }
                 
                 self.subscribed_contracts.append(('C', strike, strike_data['call_contract']))
-                # Request market data with model-based greeks (tag 106)
-                # This calculates greeks even without last price, using bid/ask mid
-                self.reqMktData(req_id, strike_data['call_contract'], "106", False, False, [])
+                # Request market data with MODEL_OPTION_COMPUTATION (tick type 13)
+                # Empty string "" triggers automatic model-based greek calculations
+                # These greeks work without Last price by using bid/ask mid-point
+                self.reqMktData(req_id, strike_data['call_contract'], "", False, False, [])
             
             # Subscribe to put
             if strike_data['put']:
@@ -1981,9 +2001,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 }
                 
                 self.subscribed_contracts.append(('P', strike, strike_data['put_contract']))
-                # Request market data with model-based greeks (tag 106)
-                # This calculates greeks even without last price, using bid/ask mid
-                self.reqMktData(req_id, strike_data['put_contract'], "106", False, False, [])
+                # Request market data with MODEL_OPTION_COMPUTATION (tick type 13)
+                # Empty string "" triggers automatic model-based greek calculations
+                # These greeks work without Last price by using bid/ask mid-point
+                self.reqMktData(req_id, strike_data['put_contract'], "", False, False, [])
             
             # Create sheet row with call on left, strike in center, put on right
             # Format: C_Bid, C_Ask, C_Last, C_CHANGE%, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_IV, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_CHANGE%, P_Last, P_Ask, P_Bid
