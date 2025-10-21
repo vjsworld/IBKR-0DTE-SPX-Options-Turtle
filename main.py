@@ -2114,11 +2114,14 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 ]
                 
                 # Update cells with values
+                # Call columns mapping: 0=bid, 1=ask, 2=last, 3=volume, 4=gamma, 5=vega, 6=theta, 7=delta, 8=iv
+                greek_keys_call = ['bid', 'ask', 'last', 'volume', 'gamma', 'vega', 'theta', 'delta', 'iv']
+                
                 for col_idx, val in enumerate(call_values):
                     cell_updates.append((row_idx, col_idx, val))
                     # Apply colors: positive/negative for greeks, default otherwise
                     if col_idx in [4, 5, 6, 7]:  # Gamma, Vega, Theta, Delta
-                        fg_color = get_value_color(call_data.get(list(call_data.keys())[col_idx + 4]))
+                        fg_color = get_value_color(call_data.get(greek_keys_call[col_idx]))
                         cell_formats.append((row_idx, col_idx, fg_color, row_bg))
                     else:
                         cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
@@ -2127,13 +2130,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 cell_updates.append((row_idx, 9, strike_value))
                 cell_formats.append((row_idx, 9, self.tws_colors['header_fg'], self.tws_colors['strike_bg']))
                 
-                # Put columns
+                # Put columns mapping: 0=delta, 1=theta, 2=vega, 3=gamma, 4=volume, 5=last, 6=ask, 7=bid
+                greek_keys_put = ['delta', 'theta', 'vega', 'gamma', 'volume', 'last', 'ask', 'bid']
+                
                 for col_offset, val in enumerate(put_values):
                     col_idx = 10 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
                     # Apply colors: positive/negative for greeks, default otherwise
                     if col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma
-                        fg_color = get_value_color(put_data.get(list(put_data.keys())[col_offset]))
+                        fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
                         cell_formats.append((row_idx, col_idx, fg_color, row_bg))
                     else:
                         cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
