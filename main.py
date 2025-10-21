@@ -2076,10 +2076,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Process each strike row
             for strike, row_idx in self.strike_to_row.items():
                 # Get call and put data for this strike
-                call_key = f"SPX_{strike}_C"
-                put_key = f"SPX_{strike}_P"
-                call_data = self.market_data.get(call_key, {})
-                put_data = self.market_data.get(put_key, {})
+                # Contract keys now include expiration date: SPX_{strike}_{C/P}_{YYYYMMDD}
+                # Find matching contracts by strike and right
+                call_data = {}
+                put_data = {}
+                
+                # Search for matching contracts in market_data
+                strike_int = int(strike) if strike == int(strike) else strike
+                for key, data in self.market_data.items():
+                    if data.get('strike') == strike:
+                        if data.get('right') == 'C':
+                            call_data = data
+                        elif data.get('right') == 'P':
+                            put_data = data
                 
                 # Determine row background based on ITM/OTM status
                 row_bg = get_row_bg_color(strike)
