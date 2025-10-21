@@ -10,6 +10,7 @@ from tkinter import messagebox
 from tkinter import font as tkfont
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import BOTH, YES, X, Y, LEFT, RIGHT, BOTTOM, TOP, CENTER, END, W, SUNKEN, HORIZONTAL, VERTICAL
+from tksheet import Sheet
 import threading
 import queue
 import time
@@ -72,12 +73,28 @@ class IBKRWrapper(EWrapper):
         - 504: Not connected
         - 1100: Connectivity between IB and TWS has been lost
         - 2110: Connectivity between TWS and server is broken
+        - 10147: Order not found (expected during rapid cancel/replace)
+        - 10268: EtradeOnly attribute not supported (benign, can ignore)
         """
         error_msg = f"Error {errorCode}: {errorString}"
         
-        # Only log non-trivial errors
-        if errorCode not in [2104, 2106, 2158]:  # Informational messages
-            self.app.log_message(error_msg, "ERROR")
+        # Suppress expected/benign errors
+        if errorCode in [2104, 2106, 2158]:  # Informational messages
+            return
+        
+        if errorCode == 10147:  # Order already filled/cancelled
+            self.app.log_message(f"Order {reqId} already processed (fill or cancel)", "INFO")
+            return
+        
+        if errorCode == 10268:  # EtradeOnly attribute error (benign)
+            # This shouldn't happen with our code, but if it does, just log once
+            if not hasattr(self.app, '_logged_10268'):
+                self.app._logged_10268 = True
+                self.app.log_message("Note: Ignoring EtradeOnly attribute warnings (not supported in paper trading)", "INFO")
+            return
+        
+        # Log all other errors
+        self.app.log_message(error_msg, "ERROR")
         
         # Client ID already in use - try next client ID
         if errorCode == 326:
@@ -189,13 +206,21 @@ class IBKRWrapper(EWrapper):
             
             if tickType == 1:  # BID
                 self.app.market_data[contract_key]['bid'] = price
+                # Update position P&L with new mid-price
+                if contract_key in self.app.positions:
+                    self.app.update_position_pnl(contract_key)
+                    
             elif tickType == 2:  # ASK
                 self.app.market_data[contract_key]['ask'] = price
+                # Update position P&L with new mid-price
+                if contract_key in self.app.positions:
+                    self.app.update_position_pnl(contract_key)
+                    
             elif tickType == 4:  # LAST
                 self.app.market_data[contract_key]['last'] = price
-                
-                # Update position PnL if this is a held position
-                self.app.update_position_pnl(contract_key, price)
+                # Update position P&L if this is a held position
+                if contract_key in self.app.positions:
+                    self.app.update_position_pnl(contract_key, price)
     
     def tickSize(self, reqId: TickerId, tickType: TickType, size: int):
         """Receives real-time size updates"""
@@ -248,27 +273,67 @@ class IBKRWrapper(EWrapper):
     def openOrder(self, orderId: int, contract: Contract, order: Order,
                  orderState):
         """Receives open order information"""
-        contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
+        contract_key = self.app.get_contract_key(contract)
         self.app.log_message(f"Open Order {orderId}: {contract_key} {order.action} {order.totalQuantity}", "INFO")
     
     def position(self, account: str, contract: Contract, position: float,
                 avgCost: float):
         """Receives position updates from IBKR"""
-        contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
+        contract_key = self.app.get_contract_key(contract)
         
         if position != 0:
+            # For options, avgCost from IBKR is total cost per contract (includes 100x multiplier)
+            # Divide by 100 to get per-option price for display
+            per_option_cost = avgCost / 100 if contract.secType == "OPT" else avgCost
+            
             self.app.positions[contract_key] = {
                 'contract': contract,
                 'position': position,
-                'avgCost': avgCost,
+                'avgCost': per_option_cost,  # Per-option price for display
                 'currentPrice': 0,
                 'pnl': 0,
                 'entryTime': datetime.now()
             }
             self.app.log_message(
-                f"Position update: {contract_key} - Qty: {position} @ ${avgCost:.2f}",
+                f"Position update: {contract_key} - Qty: {position} @ ${per_option_cost:.2f}",
                 "INFO"
             )
+            
+            # Subscribe to market data for this position if not already subscribed
+            # Check if we have an active subscription (not just market_data entry)
+            is_subscribed = any(contract_key == v for v in self.app.market_data_map.values())
+            
+            if not is_subscribed:
+                self.app.log_message(f"Subscribing to market data for position: {contract_key}", "INFO")
+                
+                # Create market data entry and subscribe
+                req_id = self.app.next_req_id
+                self.app.next_req_id += 1
+                
+                # Ensure contract has required fields for market data subscription
+                # IBKR position callback may not include exchange, so set it explicitly
+                if not contract.exchange:
+                    contract.exchange = "SMART"
+                if not contract.tradingClass and contract.symbol == "SPX":
+                    contract.tradingClass = "SPXW"
+                
+                self.app.market_data_map[req_id] = contract_key
+                
+                # Create market_data entry if it doesn't exist
+                if contract_key not in self.app.market_data:
+                    self.app.market_data[contract_key] = {
+                        'contract': contract,
+                        'right': contract.right,
+                        'strike': contract.strike,
+                        'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                        'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                    }
+                    self.app.log_message(f"Created market_data entry for {contract_key}", "INFO")
+                
+                self.app.reqMktData(req_id, contract, "", False, False, [])
+                self.app.log_message(f"Requested market data (reqId={req_id}) for {contract_key}", "INFO")
+            else:
+                self.app.log_message(f"Position {contract_key} already has active subscription", "INFO")
         else:
             # Position closed - remove from tracking
             if contract_key in self.app.positions:
@@ -288,7 +353,7 @@ class IBKRWrapper(EWrapper):
     
     def execDetails(self, reqId: int, contract: Contract, execution):
         """Receives execution details - recommended by IBKR for comprehensive monitoring"""
-        contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
+        contract_key = self.app.get_contract_key(contract)
         self.app.log_message(
             f"Execution: Order #{execution.orderId} - {contract_key} "
             f"{execution.side} {execution.shares} @ ${execution.price:.2f}",
@@ -393,6 +458,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Strategy parameters
         self.atr_period = 14
         self.chandelier_multiplier = 3.0
+        self.strategy_enabled = False  # Strategy automation OFF by default
         
         # Option chain parameters
         self.strikes_above = 20  # Number of strikes above SPX price
@@ -812,36 +878,45 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                              font=("Arial", 12, "bold"))
         pos_label.pack(fill=X, padx=5, pady=(5, 0))
         
-        pos_frame = ttk.Frame(pos_container)
+        # Create tksheet for positions (Excel-like grid)
+        pos_frame = ttk.Frame(pos_container, height=180)
         pos_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
-        pos_vsb = ttk.Scrollbar(pos_frame, orient="vertical")
-        pos_vsb.pack(side=RIGHT, fill=Y)
+        self.position_sheet = Sheet(
+            pos_frame,
+            headers=["Contract", "Qty", "Entry", "Mid", "PnL", "PnL%", "EntryTime", "TimeSpan", "Action"],
+            height=180,
+            theme="dark",
+            show_row_index=False,
+            show_top_left=False,
+            empty_horizontal=0,
+            empty_vertical=0,
+            header_font=("Arial", 10, "bold"),
+            font=("Arial", 10, "normal"),
+            header_bg="#1a1a1a",
+            header_fg="#ffffff",
+            table_bg="#000000",
+            table_fg="#ffffff",
+            table_selected_cells_bg="#1a2a3a",
+            table_selected_cells_fg="#ffffff",
+            frame_bg="#000000",
+            table_grid_fg="#1a1a1a",
+            header_border_fg="#1a1a1a",
+        )
+        self.position_sheet.enable_bindings()
+        self.position_sheet.pack(fill=BOTH, expand=YES)
         
-        # Position columns with Action for Close button
-        pos_columns = ("Contract", "Qty", "Entry", "Mid", "PnL", "PnL%", "Action")
-        self.position_tree = ttk.Treeview(pos_frame, columns=pos_columns,
-                                         show="headings", height=6,
-                                         yscrollcommand=pos_vsb.set)
-        pos_vsb.config(command=self.position_tree.yview)
+        # Set column widths using column_width method
+        # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
+        for col_idx, width in enumerate([300, 60, 80, 80, 100, 80, 120, 100, 80]):
+            self.position_sheet.column_width(column=col_idx, width=width)
         
-        for col in pos_columns:
-            self.position_tree.heading(col, text=col)
-            if col == "Action":
-                self.position_tree.column(col, width=60, anchor=CENTER)
-            elif col in ["Entry", "Mid"]:
-                self.position_tree.column(col, width=80, anchor=CENTER)
-            else:
-                self.position_tree.column(col, width=100, anchor=CENTER)
+        # Set column alignments: left for Contract (0), center for all others
+        self.position_sheet.align_columns(columns=[1, 2, 3, 4, 5, 6, 7, 8], align="center")
+        self.position_sheet.align_columns(columns=[0], align="left")
         
-        self.position_tree.pack(fill=BOTH, expand=YES)
-        
-        # Configure tags for row styling
-        self.position_tree.tag_configure('normal_row', foreground='#FFFFFF')  # White text for all columns
-        self.position_tree.tag_configure('close_btn', foreground='#FF4444')   # Red text for Close column
-        
-        # Bind click event for Close button in Action column
-        self.position_tree.bind('<ButtonRelease-1>', self.on_position_tree_click)
+        # Bind click event for Close button
+        self.position_sheet.bind("<ButtonRelease-1>", self.on_position_sheet_click)
         
         # Orders section (right side)
         order_container = ttk.Frame(pos_order_frame)
@@ -854,20 +929,42 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         order_frame = ttk.Frame(order_container)
         order_frame.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
-        order_vsb = ttk.Scrollbar(order_frame, orient="vertical")
-        order_vsb.pack(side=RIGHT, fill=Y)
+        # tksheet for orders (dark theme, Excel-like)
+        self.order_sheet = Sheet(
+            order_frame,
+            theme="dark",
+            headers=["Order ID", "Contract", "Action", "Qty", "Price", "Status", "Cancel"],
+            height=180,
+            column_width=100,
+            show_top_left=False,
+            show_row_index=False,
+            header_bg="#1a1a1a",
+            header_fg="#ffffff",
+            header_font=("Arial", 10, "bold"),
+            table_bg="#000000",
+            table_fg="#ffffff",
+            table_font=("Arial", 10, "normal"),
+            table_selected_cells_bg="#333333",
+            table_selected_cells_fg="#ffffff"
+        )
+        self.order_sheet.enable_bindings("all")
+        self.order_sheet.pack(fill=BOTH, expand=YES)
         
-        order_columns = ("Order ID", "Contract", "Action", "Qty", "Status")
-        self.order_tree = ttk.Treeview(order_frame, columns=order_columns,
-                                      show="headings", height=6,
-                                      yscrollcommand=order_vsb.set)
-        order_vsb.config(command=self.order_tree.yview)
+        # Set column widths
+        self.order_sheet.column_width(column=0, width=80)   # Order ID
+        self.order_sheet.column_width(column=1, width=300)  # Contract (widened for full name)
+        self.order_sheet.column_width(column=2, width=60)   # Action
+        self.order_sheet.column_width(column=3, width=60)   # Qty
+        self.order_sheet.column_width(column=4, width=80)   # Price
+        self.order_sheet.column_width(column=5, width=120)  # Status
+        self.order_sheet.column_width(column=6, width=80)   # Cancel
         
-        for col in order_columns:
-            self.order_tree.heading(col, text=col)
-            self.order_tree.column(col, width=100, anchor=CENTER)
+        # Set column alignments: left for Contract (1), center for all others
+        self.order_sheet.align_columns(columns=[0, 2, 3, 4, 5, 6], align="center")
+        self.order_sheet.align_columns(columns=[1], align="left")
         
-        self.order_tree.pack(fill=BOTH, expand=YES)
+        # Bind click event for Cancel button
+        self.order_sheet.bind("<ButtonRelease-1>", self.on_order_sheet_click)
         
         # Row 2: Charts side-by-side (Calls on left, Puts on right)
         charts_frame = ttk.Frame(bottom_frame)
@@ -1153,6 +1250,41 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.chain_refresh_entry.insert(0, str(self.chain_refresh_interval))
         self.chain_refresh_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
         
+        # Strategy Automation Control
+        ttk.Label(strategy_frame, text="Strategy Automation:").grid(
+            row=5, column=0, sticky=W, pady=15)
+        
+        automation_frame = ttk.Frame(strategy_frame)
+        automation_frame.grid(row=5, column=1, sticky=W, padx=10, pady=15)
+        
+        # Create ON/OFF buttons with visual feedback
+        self.strategy_on_btn = ttk.Button(
+            automation_frame, 
+            text="ON", 
+            command=lambda: self.set_strategy_enabled(True),
+            width=8
+        )
+        self.strategy_on_btn.pack(side=LEFT, padx=5)
+        
+        self.strategy_off_btn = ttk.Button(
+            automation_frame, 
+            text="OFF", 
+            command=lambda: self.set_strategy_enabled(False),
+            width=8
+        )
+        self.strategy_off_btn.pack(side=LEFT, padx=5)
+        
+        # Status label
+        self.strategy_status_label = ttk.Label(
+            automation_frame, 
+            text="", 
+            font=("Arial", 10, "bold")
+        )
+        self.strategy_status_label.pack(side=LEFT, padx=10)
+        
+        # Initialize button states
+        self.update_strategy_button_states()
+        
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
         button_frame.pack(fill=X, padx=20, pady=20)
@@ -1408,7 +1540,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'chandelier_multiplier': self.chandelier_multiplier,
                 'strikes_above': self.strikes_above,
                 'strikes_below': self.strikes_below,
-                'chain_refresh_interval': self.chain_refresh_interval
+                'chain_refresh_interval': self.chain_refresh_interval,
+                'strategy_enabled': self.strategy_enabled
             }
             
             with open('settings.json', 'w') as f:
@@ -1435,10 +1568,39 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.strikes_below = settings.get('strikes_below', self.strikes_below)
                 self.chain_refresh_interval = settings.get('chain_refresh_interval', 
                                                           self.chain_refresh_interval)
+                self.strategy_enabled = settings.get('strategy_enabled', False)
                 
                 self.log_message("Settings loaded successfully", "SUCCESS")
         except Exception as e:
             self.log_message(f"Error loading settings: {str(e)}", "ERROR")
+    
+    def set_strategy_enabled(self, enabled: bool):
+        """Enable or disable automated strategy"""
+        self.strategy_enabled = enabled
+        self.update_strategy_button_states()
+        self.save_settings()  # Persist the change
+        
+        status = "ENABLED" if enabled else "DISABLED"
+        self.log_message(f"Automated Strategy {status}", "SUCCESS" if enabled else "INFO")
+    
+    def update_strategy_button_states(self):
+        """Update the visual state of strategy ON/OFF buttons"""
+        if self.strategy_enabled:
+            # ON is active (green background)
+            self.strategy_on_btn.config(style="success.TButton")
+            self.strategy_off_btn.config(style="TButton")
+            self.strategy_status_label.config(
+                text="ACTIVE",
+                foreground="#00FF00"
+            )
+        else:
+            # OFF is active (red background)
+            self.strategy_on_btn.config(style="TButton")
+            self.strategy_off_btn.config(style="danger.TButton")
+            self.strategy_status_label.config(
+                text="INACTIVE",
+                foreground="#FF0000"
+            )
     
     # ========================================================================
     # SPX UNDERLYING PRICE
@@ -1549,14 +1711,51 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if self.connection_state == ConnectionState.CONNECTED:
             self.refresh_option_chain()
     
-    def create_spxw_contract(self, strike: float, right: str) -> Contract:
-        """Create a SPXW option contract with current expiration"""
+    def get_contract_key(self, contract: Contract) -> str:
+        """
+        Generate standardized contract key for tracking positions and market data.
+        
+        Format: SYMBOL_STRIKE_RIGHT_YYYYMMDD
+        - Strike: Integer format (no decimals for SPX, but keeps decimals for other symbols if present)
+        - Expiry: Full expiration date (YYYYMMDD)
+        
+        Examples:
+        - SPX_6740_C_20251020 (SPX Call at 6740, expiring Oct 20, 2025)
+        - SPX_6745_P_20251020 (SPX Put at 6745, expiring Oct 20, 2025)
+        - AAPL_150.5_C_20251120 (AAPL Call at 150.50, expiring Nov 20, 2025)
+        """
+        # Format strike: remove unnecessary decimals (.0 becomes empty)
+        strike = contract.strike
+        if strike == int(strike):
+            strike_str = str(int(strike))  # Remove .0 for whole numbers
+        else:
+            strike_str = str(strike)  # Keep decimals for fractional strikes
+        
+        # Get YYYYMMDD from expiration (full 8-character date)
+        expiry_yyyymmdd = contract.lastTradeDateOrContractMonth[:8] if contract.lastTradeDateOrContractMonth else "00000000"
+        
+        return f"{contract.symbol}_{strike_str}_{contract.right}_{expiry_yyyymmdd}"
+    
+    def create_option_contract(self, strike: float, right: str, symbol: str = "SPX", 
+                              trading_class: str = "SPXW") -> Contract:
+        """
+        Create an option contract with current expiration.
+        
+        Args:
+            strike: Strike price
+            right: "C" for call or "P" for put
+            symbol: Underlying symbol (default: "SPX")
+            trading_class: Trading class (default: "SPXW" for SPX weeklies)
+        
+        Returns:
+            Contract object ready for IBKR API calls
+        """
         contract = Contract()
-        contract.symbol = "SPX"
+        contract.symbol = symbol
         contract.secType = "OPT"
         contract.currency = "USD"
         contract.exchange = "SMART"
-        contract.tradingClass = "SPXW"
+        contract.tradingClass = trading_class
         contract.strike = strike
         contract.right = right  # "C" or "P"
         contract.lastTradeDateOrContractMonth = self.current_expiry
@@ -1642,8 +1841,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.spx_contracts = []
         
         for strike in strikes:
-            call_contract = self.create_spxw_contract(strike, "C")
-            put_contract = self.create_spxw_contract(strike, "P")
+            call_contract = self.create_option_contract(strike, "C")
+            put_contract = self.create_option_contract(strike, "P")
             
             self.spx_contracts.append(('C', strike, call_contract))
             self.spx_contracts.append(('P', strike, put_contract))
@@ -1686,8 +1885,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 
                 for strike in strikes:
                     # Create call and put contracts for each strike
-                    call_contract = self.create_spxw_contract(strike, "C")
-                    put_contract = self.create_spxw_contract(strike, "P")
+                    call_contract = self.create_option_contract(strike, "C")
+                    put_contract = self.create_option_contract(strike, "P")
                     
                     self.spx_contracts.append(('C', strike, call_contract))
                     self.spx_contracts.append(('P', strike, put_contract))
@@ -1751,7 +1950,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 req_id = self.next_req_id
                 self.next_req_id += 1
                 
-                contract_key = f"SPX_{strike}_C"
+                contract_key = self.get_contract_key(strike_data['call_contract'])
                 self.market_data_map[req_id] = contract_key
                 
                 self.market_data[contract_key] = {
@@ -1770,7 +1969,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 req_id = self.next_req_id
                 self.next_req_id += 1
                 
-                contract_key = f"SPX_{strike}_P"
+                contract_key = self.get_contract_key(strike_data['put_contract'])
                 self.market_data_map[req_id] = contract_key
                 
                 self.market_data[contract_key] = {
@@ -1794,11 +1993,14 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             item = self.option_tree.insert("", tk.END, values=values, tags=(str(strike),))
             
-            # Store tree item reference in both call and put data
-            if f"SPX_{strike}_C" in self.market_data:
-                self.market_data[f"SPX_{strike}_C"]['tree_item'] = item
-            if f"SPX_{strike}_P" in self.market_data:
-                self.market_data[f"SPX_{strike}_P"]['tree_item'] = item
+            # Store tree item reference using proper contract keys
+            call_key = self.get_contract_key(strike_data['call_contract']) if strike_data['call_contract'] else None
+            put_key = self.get_contract_key(strike_data['put_contract']) if strike_data['put_contract'] else None
+            
+            if call_key and call_key in self.market_data:
+                self.market_data[call_key]['tree_item'] = item
+            if put_key and put_key in self.market_data:
+                self.market_data[put_key]['tree_item'] = item
         
         self.log_message(
             f"Successfully subscribed to {len(sorted_strikes) * 2} contracts ({len(sorted_strikes)} strikes)", 
@@ -1973,7 +2175,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         """
         Enter a long straddle at the top of the hour.
         Searches for the cheapest call and put with ask price <= $0.50.
+        
+        NOTE: This is the AUTOMATED STRATEGY MODE function.
+        Only runs when strategy_enabled = True.
         """
+        # Check if automated strategy is enabled
+        if not self.strategy_enabled:
+            self.log_message("Automated strategy is disabled - skipping straddle entry", "INFO")
+            return
+        
         if self.connection_state != ConnectionState.CONNECTED:
             self.log_message("Cannot enter straddle: Not connected to IBKR", "WARNING")
             return
@@ -2080,7 +2290,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                         "INFO")
         
         # Add to order tree
-        self.add_order_to_tree(order_id, contract, action, quantity, "Submitted")
+        self.add_order_to_tree(order_id, contract, action, quantity, limit_price, "Submitted")
         
         return order_id
     
@@ -2105,7 +2315,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                         f"Stop ${stop_price:.2f} Limit ${limit_price:.2f}", "INFO")
         
         # Add to order tree
-        self.add_order_to_tree(order_id, contract, action, quantity, "Submitted")
+        self.add_order_to_tree(order_id, contract, action, quantity, limit_price, "Submitted")
         
         return order_id
     
@@ -2113,19 +2323,42 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                                quantity: int, fill_price: float):
         """Update position when order is filled"""
         if contract_key not in self.positions:
-            # New position
+            # New position - fill_price is already per-option price
             data = self.market_data[contract_key]
             self.positions[contract_key] = {
                 'contract': data['contract'],
                 'position': quantity if action == "BUY" else -quantity,
-                'avgCost': fill_price,
+                'avgCost': fill_price,  # Per-option price (not x100)
                 'currentPrice': fill_price,
                 'pnl': 0,
                 'entryTime': datetime.now()
             }
             
-            # Position tracking initialized
-            # Historical data will be requested when chart is clicked
+            # Subscribe to market data for real-time updates
+            if contract_key not in self.market_data:
+                self.log_message(f"Subscribing to market data for new position: {contract_key}", "INFO")
+                
+                # Create market data entry and subscribe
+                req_id = self.next_req_id
+                self.next_req_id += 1
+                
+                # Ensure contract has required fields for market data subscription
+                contract_obj = data['contract']
+                if not contract_obj.exchange:
+                    contract_obj.exchange = "SMART"
+                if not contract_obj.tradingClass and contract_obj.symbol == "SPX":
+                    contract_obj.tradingClass = "SPXW"
+                
+                self.market_data_map[req_id] = contract_key
+                self.market_data[contract_key] = {
+                    'contract': contract_obj,
+                    'right': contract_obj.right,
+                    'strike': contract_obj.strike,
+                    'bid': 0, 'ask': 0, 'last': 0, 'volume': 0,
+                    'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'iv': 0
+                }
+                
+                self.reqMktData(req_id, contract_obj, "", False, False, [])
         else:
             # Update existing position
             pos = self.positions[contract_key]
@@ -2163,8 +2396,21 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 ask = data.get('ask', 0)
                 if bid > 0 and ask > 0:
                     current_price = (bid + ask) / 2
+                    # DEBUG: Log mid-price calculation
+                    # self.log_message(f"Mid price for {contract_key}: ${current_price:.2f} (bid: ${bid:.2f}, ask: ${ask:.2f})", "INFO")
                 else:
                     current_price = data.get('last', pos['avgCost'])
+                    # DEBUG: Log fallback to last price
+                    # self.log_message(f"Using last price for {contract_key}: ${current_price:.2f} (no bid/ask)", "WARNING")
+            elif current_price is None:
+                # DEBUG: Log if market data not found - check what keys exist
+                available_keys = list(self.market_data.keys())[:5]  # Show first 5 keys
+                self.log_message(
+                    f"No market data for position {contract_key}. "
+                    f"Have {len(self.market_data)} entries. Sample keys: {available_keys}",
+                    "WARNING"
+                )
+                current_price = pos.get('currentPrice', pos['avgCost'])
             
             if current_price:
                 pos['currentPrice'] = current_price
@@ -2378,6 +2624,23 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         - Chase the market only when necessary
         - Avoid aggressive market orders that give up edge
         """
+        # Validate contract fields before placing order
+        if not contract.symbol or not contract.secType:
+            self.log_message(f"ERROR: Invalid contract - missing symbol or secType", "ERROR")
+            return
+        
+        if not contract.exchange:
+            contract.exchange = "SMART"
+            self.log_message(f"Set contract.exchange = SMART", "INFO")
+        
+        if contract.symbol == "SPX" and not contract.tradingClass:
+            contract.tradingClass = "SPXW"
+            self.log_message(f"Set contract.tradingClass = SPXW", "INFO")
+        
+        if not contract.currency:
+            contract.currency = "USD"
+            self.log_message(f"Set contract.currency = USD", "INFO")
+        
         order = Order()
         order.action = action
         order.totalQuantity = quantity
@@ -2385,12 +2648,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         order.lmtPrice = initial_price
         order.tif = "DAY"
         order.transmit = True
-        # Explicitly clear attributes not supported by IBKR
-        order.eTradeOnly = False
-        order.firmQuoteOnly = False
         
         order_id = self.next_order_id
         self.next_order_id += 1
+        
+        self.log_message(f"Placing order #{order_id}: {action} {quantity} {contract.symbol} {contract.strike}{contract.right} @ ${initial_price:.2f}", "INFO")
         
         # Track this manual order for price chasing
         self.manual_orders[order_id] = {
@@ -2412,7 +2674,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             "SUCCESS"
         )
         
-        self.add_order_to_tree(order_id, contract, action, quantity, "Chasing Mid")
+        self.add_order_to_tree(order_id, contract, action, quantity, initial_price, "Chasing Mid")
         
         # Start monitoring this order
         if self.root:
@@ -2451,74 +2713,70 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             price_diff = abs(current_mid - last_mid)
             
             if price_diff >= 0.05:  # Moved at least one tick ($0.05)
-                # Mid has moved - re-price the order
+                # Mid has moved - modify the order price
                 self.log_message(
-                    f"Order #{order_id}: Mid moved ${last_mid:.2f} → ${current_mid:.2f}, re-pricing...",
+                    f"Order #{order_id}: Mid moved ${last_mid:.2f} → ${current_mid:.2f}, updating price...",
                     "INFO"
                 )
                 
-                # Cancel old order
-                self.cancelOrder(order_id)
+                # Modify existing order with new price
+                modified_order = Order()
+                modified_order.action = order_info['action']
+                modified_order.totalQuantity = order_info['quantity']
+                modified_order.orderType = "LMT"
+                modified_order.lmtPrice = current_mid
+                modified_order.tif = "DAY"
+                modified_order.transmit = True
                 
-                # Place new order at updated mid-price
-                new_order = Order()
-                new_order.action = order_info['action']
-                new_order.totalQuantity = order_info['quantity']
-                new_order.orderType = "LMT"
-                new_order.lmtPrice = current_mid
-                new_order.tif = "DAY"
-                new_order.transmit = True
-                # Explicitly clear attributes not supported by IBKR
-                new_order.eTradeOnly = False
-                new_order.firmQuoteOnly = False
-                
-                # Use same order ID for replacement (IBKR allows this after cancel)
-                self.placeOrder(order_id, order_info['contract'], new_order)
+                # Use same order ID to modify the existing order
+                self.placeOrder(order_id, order_info['contract'], modified_order)
                 
                 # Update tracking
                 order_info['last_mid'] = current_mid
                 order_info['attempts'] += 1
                 
+                # Update price in display
+                self.update_order_in_tree(order_id, "Chasing Mid", current_mid)
+                
                 self.log_message(
-                    f"Order #{order_id} re-priced to ${current_mid:.2f} (attempt #{order_info['attempts']})",
+                    f"Order #{order_id} price updated to ${current_mid:.2f} (attempt #{order_info['attempts']})",
                     "SUCCESS"
                 )
         
         # Remove filled/cancelled orders from monitoring
         for order_id in orders_to_remove:
-            del self.manual_orders[order_id]
+            if order_id in self.manual_orders:
+                del self.manual_orders[order_id]
         
         # Continue monitoring if orders remain
         if self.manual_orders and self.root:
             self.root.after(self.manual_order_update_interval, self.update_manual_orders)
     
-    def on_position_tree_click(self, event):
+    def on_position_sheet_click(self, event):
         """
-        Handle click on position tree to close positions
+        Handle click on position sheet to close positions
         
-        When user clicks "Close" button in Action column, immediately closes
+        When user clicks "X Close" button in Action column, immediately closes
         the position using same mid-price chasing logic as entries
         """
         try:
-            selection = self.position_tree.selection()
-            if not selection:
+            # Get selected cell
+            selected = self.position_sheet.get_currently_selected()
+            if not selected:
                 return
             
-            item = selection[0]
-            values = self.position_tree.item(item, 'values')
+            row, col = selected.row, selected.column
             
-            if not values or len(values) < 7:
+            # Check if clicked on Action column (index 8 - updated from 6 after adding EntryTime/TimeSpan)
+            if col != 8:
                 return
             
-            # Check if clicked on Action column (index 6)
-            column = self.position_tree.identify_column(event.x)
-            col_index = int(column.replace('#', '')) - 1
-            
-            if col_index != 6:  # Not the Action column
+            # Get all data from the row
+            row_data = self.position_sheet.get_row_data(row)
+            if not row_data or len(row_data) < 7:
                 return
             
-            # Extract contract key from the display
-            contract_display = values[0]  # e.g., "SPX_5800.0_C"
+            contract_display = row_data[0]  # e.g., "SPX_5800.0_C"
             
             # Find matching position
             matching_key = None
@@ -2559,8 +2817,77 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             action = "SELL"
             quantity = abs(pos['position'])
             
-            self.place_manual_order(matching_key, pos['contract'], action, quantity, mid_price)
+            # Ensure contract has all required fields for order placement
+            exit_contract = pos['contract']
+            if not exit_contract.exchange:
+                exit_contract.exchange = "SMART"
+            if not exit_contract.tradingClass and exit_contract.symbol == "SPX":
+                exit_contract.tradingClass = "SPXW"
+            if not exit_contract.currency:
+                exit_contract.currency = "USD"
+            
+            self.log_message(f"Exit order: {action} {quantity} @ ${mid_price:.2f}", "INFO")
+            self.log_message(f"Contract: {exit_contract.symbol} {exit_contract.strike} {exit_contract.right} {exit_contract.lastTradeDateOrContractMonth}", "INFO")
+            
+            self.place_manual_order(matching_key, exit_contract, action, quantity, mid_price)
             self.log_message("=" * 60, "INFO")
+            
+        except Exception as e:
+            self.log_message(f"Error in on_position_sheet_click: {e}", "ERROR")
+    
+    def on_order_sheet_click(self, event):
+        """
+        Handle click on order sheet to cancel orders
+        
+        When user clicks "Cancel" button, cancels the order and removes from display
+        """
+        try:
+            # Get selected cell
+            selected = self.order_sheet.get_currently_selected()
+            if not selected:
+                return
+            
+            row, col = selected.row, selected.column
+            
+            # Check if clicked on Cancel column (index 6)
+            if col != 6:
+                return
+            
+            # Get order ID from first column
+            row_data = self.order_sheet.get_row_data(row)
+            if not row_data or len(row_data) < 1:
+                return
+            
+            order_id = int(row_data[0])
+            contract_display = row_data[1] if len(row_data) > 1 else "Unknown"
+            
+            # Confirm cancellation
+            confirm = messagebox.askyesno(
+                "Cancel Order",
+                f"Cancel order #{order_id}?\n"
+                f"Contract: {contract_display}"
+            )
+            
+            if not confirm:
+                return
+            
+            self.log_message(f"Canceling order #{order_id}...", "INFO")
+            
+            # Cancel the order
+            self.cancelOrder(order_id)
+            
+            # Remove from manual orders tracking (stops price chasing)
+            if order_id in self.manual_orders:
+                del self.manual_orders[order_id]
+            
+            # Remove from pending orders
+            if order_id in self.pending_orders:
+                del self.pending_orders[order_id]
+            
+            # Remove from display
+            self.update_order_in_tree(order_id, "Cancelled")
+            
+            self.log_message(f"Order #{order_id} cancelled", "SUCCESS")
             
         except Exception as e:
             self.log_message(f"Error closing position: {e}", "ERROR")
@@ -2695,27 +3022,37 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 
                 # Columns 0-8 are calls, 9 is strike, 10-17 are puts
                 if col_index < 9:
-                    # Clicked on call side
-                    contract_key = f"SPX_{strike}_C"
-                    self.log_message(f"Looking for call contract: {contract_key}", "INFO")
+                    # Clicked on call side - find contract by strike and right
+                    contract_key = None
+                    for key, data in self.market_data.items():
+                        if data.get('strike') == float(strike) and data.get('right') == 'C':
+                            contract_key = key
+                            break
                     
-                    if contract_key in self.market_data:
+                    self.log_message(f"Looking for call contract at strike {strike}, found: {contract_key}", "INFO")
+                    
+                    if contract_key and contract_key in self.market_data:
                         # Create fresh contract with current expiration for chart data
-                        self.selected_call_contract = self.create_spxw_contract(float(strike), "C")
+                        self.selected_call_contract = self.create_option_contract(float(strike), "C")
                         self.log_message(f"✓ Selected CALL: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
                         self.update_call_chart()
                     else:
-                        self.log_message(f"Contract {contract_key} not found in market_data", "WARNING")
+                        self.log_message(f"Call contract at strike {strike} not found in market_data", "WARNING")
                         self.log_message(f"Available contracts: {list(self.market_data.keys())[:5]}...", "DEBUG")
                         
                 elif col_index > 9:
-                    # Clicked on put side
-                    contract_key = f"SPX_{strike}_P"
-                    self.log_message(f"Looking for put contract: {contract_key}", "INFO")
+                    # Clicked on put side - find contract by strike and right
+                    contract_key = None
+                    for key, data in self.market_data.items():
+                        if data.get('strike') == float(strike) and data.get('right') == 'P':
+                            contract_key = key
+                            break
                     
-                    if contract_key in self.market_data:
+                    self.log_message(f"Looking for put contract at strike {strike}, found: {contract_key}", "INFO")
+                    
+                    if contract_key and contract_key in self.market_data:
                         # Create fresh contract with current expiration for chart data
-                        self.selected_put_contract = self.create_spxw_contract(float(strike), "P")
+                        self.selected_put_contract = self.create_option_contract(float(strike), "P")
                         self.log_message(f"✓ Selected PUT: Strike {strike} (Expiry: {self.current_expiry}) - Requesting chart data...", "SUCCESS")
                         self.update_put_chart()
                     else:
@@ -2808,8 +3145,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def on_call_settings_changed(self):
         """Handle call chart settings change - clear data and refresh"""
         if self.selected_call_contract:
-            # Include expiration in contract_key to match the format used in chart updates
-            contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}_{self.current_expiry}"
+            contract_key = self.get_contract_key(self.selected_call_contract)
             # Clear historical data to force re-request with new settings
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
@@ -2818,8 +3154,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def on_put_settings_changed(self):
         """Handle put chart settings change - clear data and refresh"""
         if self.selected_put_contract:
-            # Include expiration in contract_key to match the format used in chart updates
-            contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}_{self.current_expiry}"
+            contract_key = self.get_contract_key(self.selected_put_contract)
             # Clear historical data to force re-request with new settings
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
@@ -2851,8 +3186,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not self.selected_call_contract:
             return
         
-        # Include expiration in contract_key for historical data to avoid cache collisions
-        contract_key = f"SPX_{self.selected_call_contract.strike}_{self.selected_call_contract.right}_{self.current_expiry}"
+        contract_key = self.get_contract_key(self.selected_call_contract)
         
         # Request historical data if not already requested or if settings changed
         if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
@@ -2891,8 +3225,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not self.selected_put_contract:
             return
         
-        # Include expiration in contract_key for historical data to avoid cache collisions
-        contract_key = f"SPX_{self.selected_put_contract.strike}_{self.selected_put_contract.right}_{self.current_expiry}"
+        contract_key = self.get_contract_key(self.selected_put_contract)
         
         # Request historical data if not already requested or if settings changed
         if contract_key not in self.historical_data or len(self.historical_data.get(contract_key, [])) == 0:
@@ -3097,74 +3430,119 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # ========================================================================
     
     def add_order_to_tree(self, order_id: int, contract: Contract, action: str,
-                         quantity: int, status: str):
-        """Add order to the order treeview"""
-        contract_key = f"{contract.symbol}_{contract.strike}_{contract.right}"
-        values = (order_id, contract_key, action, quantity, status)
-        self.order_tree.insert("", tk.END, values=values, tags=(str(order_id),))
+                         quantity: int, price: float, status: str):
+        """Add order to the order sheet (tksheet)"""
+        try:
+            contract_key = self.get_contract_key(contract)
+            
+            # Get current data
+            current_data = self.order_sheet.get_sheet_data()
+            
+            # Add new row with price and Cancel button
+            new_row = [str(order_id), contract_key, action, str(quantity), f"${price:.2f}", status, "Cancel"]
+            current_data.append(new_row)
+            
+            # Update sheet
+            self.order_sheet.set_sheet_data(current_data)
+            
+            # Apply yellow background to Cancel button (column 6)
+            row_idx = len(current_data) - 1
+            self.order_sheet.highlight_cells(row=row_idx, column=6, fg="#000000", bg="#FFFF00")
+            
+        except Exception as e:
+            self.log_message(f"Error adding order to sheet: {e}", "ERROR")
     
-    def update_order_in_tree(self, order_id: int, status: str):
-        """Update order status in treeview"""
-        for item in self.order_tree.get_children():
-            if str(order_id) in self.order_tree.item(item, "tags"):
-                values = list(self.order_tree.item(item, "values"))
-                values[4] = status
-                self.order_tree.item(item, values=values)
-                
-                # Remove if filled or cancelled
-                if status in ["Filled", "Cancelled"]:
-                    self.order_tree.delete(item)
-                break
+    def update_order_in_tree(self, order_id: int, status: str, price: Optional[float] = None):
+        """Update order status and optionally price in sheet (tksheet)"""
+        try:
+            # Get all rows
+            data = self.order_sheet.get_sheet_data()
+            
+            # Find and update the row
+            for i, row in enumerate(data):
+                if row and len(row) > 0 and str(row[0]) == str(order_id):
+                    # Update price if provided
+                    if price is not None:
+                        row[4] = f"${price:.2f}"
+                    
+                    # Update status
+                    row[5] = status
+                    
+                    # If filled/cancelled, remove the row
+                    if status in ["Filled", "Cancelled"]:
+                        data.pop(i)
+                    
+                    # Update sheet
+                    self.order_sheet.set_sheet_data(data)
+                    break
+                    
+        except Exception as e:
+            self.log_message(f"Error updating order in sheet: {e}", "ERROR")
     
     def update_positions_display(self):
-        """Update the positions treeview"""
+        """Update the positions tksheet grid"""
         if not self.root:
             return
         
-        # Get existing items to avoid duplicates
-        existing_items = {}
-        for item in self.position_tree.get_children():
-            values = self.position_tree.item(item)['values']
-            if values:
-                existing_items[values[0]] = item  # contract_key -> item_id
-        
+        # Build data rows
+        rows = []
         total_pnl = 0
-        current_keys = set()
         
-        # Add or update current positions
         for contract_key, pos in self.positions.items():
-            current_keys.add(contract_key)
-            
-            # Update P&L with current mid-price
+            # Update P&L with current mid-price from market data
             self.update_position_pnl(contract_key)
             
             pnl = pos['pnl']
             pnl_pct = (pos['currentPrice'] / pos['avgCost'] - 1) * 100 if pos['avgCost'] > 0 else 0
             
-            # Format values (showing option prices, not dollar amounts)
-            values = (
+            # Calculate time in position
+            entry_time = pos.get('entryTime', datetime.now())
+            time_span = datetime.now() - entry_time
+            
+            # Format time span as HH:MM:SS
+            hours, remainder = divmod(int(time_span.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_span_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            
+            # Format entry time as HH:MM:SS
+            entry_time_str = entry_time.strftime("%H:%M:%S")
+            
+            # Format row data
+            row = [
                 contract_key,
-                pos['position'],
-                f"${pos['avgCost']:.2f}",      # Entry price per option
-                f"${pos['currentPrice']:.2f}",  # Current mid-price per option
-                f"${pnl:.2f}",                  # Total P&L (includes 100x multiplier)
+                f"{pos['position']:.0f}",
+                f"${pos['avgCost']:.2f}",
+                f"${pos['currentPrice']:.2f}",
+                f"${pnl:.2f}",
                 f"{pnl_pct:.2f}%",
-                "✕"  # Close button - red X symbol
-            )
-            
-            if contract_key in existing_items:
-                # Update existing row with white text
-                self.position_tree.item(existing_items[contract_key], values=values, tags=('normal_row',))
-            else:
-                # Insert new row with white text
-                self.position_tree.insert("", tk.END, values=values, tags=('normal_row',))
-            
+                entry_time_str,
+                time_span_str,
+                "Close"
+            ]
+            rows.append(row)
             total_pnl += pnl
         
-        # Remove stale positions (no longer in self.positions)
-        for contract_key, item_id in existing_items.items():
-            if contract_key not in current_keys:
-                self.position_tree.delete(item_id)
+        # Update sheet data
+        self.position_sheet.set_sheet_data(rows)
+        
+        # Color-code rows based on P&L
+        for row_idx, (contract_key, pos) in enumerate(self.positions.items()):
+            pnl = pos['pnl']
+            
+            # Determine row color
+            if pnl > 0:
+                fg_color = "#00FF00"  # Green for profit
+            elif pnl < 0:
+                fg_color = "#FF0000"  # Red for loss
+            else:
+                fg_color = "#FFFFFF"  # White for zero
+            
+            # Apply color to PnL columns (indices 4 and 5)
+            self.position_sheet.highlight_cells(row=row_idx, column=4, fg=fg_color, bg="#000000")
+            self.position_sheet.highlight_cells(row=row_idx, column=5, fg=fg_color, bg="#000000")
+            
+            # Style Close button: Red background, white text (index 8 - moved from 6 due to new columns)
+            self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"

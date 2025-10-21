@@ -3,6 +3,7 @@ ibapi>=9.81.1
 
 # GUI Framework
 ttkbootstrap>=1.10.1
+tksheet>=7.2.0
 
 # Data Analysis
 pandas>=2.0.0
