@@ -904,16 +904,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         }
         
         # Column headers matching IBKR layout with CHANGE % column
-        # CALLS: Bid, Ask, Last, CHANGE %, Volume, Gamma, Vega, Theta, Delta, Imp Vol
+        # CALLS: Imp Vol, Delta, Theta, Vega, Gamma, Volume, CHANGE %, Last, Ask, Bid (reversed - bid/ask closest to strike)
         # STRIKE (center)
-        # PUTS: Imp Vol, Delta, Theta, Vega, Gamma, Volume, CHANGE %, Last, Ask, Bid
+        # PUTS: Bid, Ask, Last, CHANGE %, Volume, Gamma, Vega, Theta, Delta, Imp Vol (reversed - bid/ask closest to strike)
         headers = [
-            # Call side (left) - 10 columns
-            "Bid", "Ask", "Last", "CHANGE %", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol",
+            # Call side (left) - 10 columns (REVERSED)
+            "Imp Vol", "Delta", "Theta", "Vega", "Gamma", "Volume", "CHANGE %", "Last", "Ask", "Bid",
             # Strike (center) - 1 column
             "● STRIKE ●",
-            # Put side (right) - 10 columns (added Imp Vol to match calls)
-            "Imp Vol", "Delta", "Theta", "Vega", "Gamma", "Volume", "CHANGE %", "Last", "Ask", "Bid"
+            # Put side (right) - 10 columns (REVERSED)
+            "Bid", "Ask", "Last", "CHANGE %", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol"
         ]
         
         # Create tksheet with professional configuration
@@ -2391,46 +2391,46 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                             put_data['iv'] = greeks['iv']
                 
                 # Build row values
-                # Call columns (0-9): Bid, Ask, Last, CHANGE%, Volume, Gamma, Vega, Theta, Delta, IV
+                # Call columns (0-9): Imp Vol, Delta, Theta, Vega, Gamma, Volume, CHANGE%, Last, Ask, Bid (REVERSED)
                 call_values = [
-                    safe_format(call_data.get('bid'), ".2f"),
-                    safe_format(call_data.get('ask'), ".2f"),
-                    safe_format(call_data.get('last'), ".2f"),
-                    call_change_str,  # CHANGE % at index 3
-                    safe_format(call_data.get('volume'), "int"),
-                    safe_format(call_data.get('gamma'), ".4f"),
-                    safe_format(call_data.get('vega'), ".4f"),
-                    safe_format(call_data.get('theta'), ".4f"),
+                    safe_format(call_data.get('iv'), ".2f"),
                     safe_format(call_data.get('delta'), ".4f"),
-                    safe_format(call_data.get('iv'), ".2f")
+                    safe_format(call_data.get('theta'), ".4f"),
+                    safe_format(call_data.get('vega'), ".4f"),
+                    safe_format(call_data.get('gamma'), ".4f"),
+                    safe_format(call_data.get('volume'), "int"),
+                    call_change_str,  # CHANGE % at index 6
+                    safe_format(call_data.get('last'), ".2f"),
+                    safe_format(call_data.get('ask'), ".2f"),
+                    safe_format(call_data.get('bid'), ".2f")
                 ]
                 
                 # Strike column (10)
                 strike_value = f"{strike:.2f}"
                 
-                # Put columns (11-20): IV, Delta, Theta, Vega, Gamma, Volume, CHANGE%, Last, Ask, Bid
+                # Put columns (11-20): Bid, Ask, Last, CHANGE%, Volume, Gamma, Vega, Theta, Delta, IV (REVERSED)
                 put_values = [
-                    safe_format(put_data.get('iv'), ".2f"),
-                    safe_format(put_data.get('delta'), ".4f"),
-                    safe_format(put_data.get('theta'), ".4f"),
-                    safe_format(put_data.get('vega'), ".4f"),
-                    safe_format(put_data.get('gamma'), ".4f"),
-                    safe_format(put_data.get('volume'), "int"),
-                    put_change_str,  # CHANGE % at index 6
-                    safe_format(put_data.get('last'), ".2f"),
+                    safe_format(put_data.get('bid'), ".2f"),
                     safe_format(put_data.get('ask'), ".2f"),
-                    safe_format(put_data.get('bid'), ".2f")
+                    safe_format(put_data.get('last'), ".2f"),
+                    put_change_str,  # CHANGE % at index 3 (column 14)
+                    safe_format(put_data.get('volume'), "int"),
+                    safe_format(put_data.get('gamma'), ".4f"),
+                    safe_format(put_data.get('vega'), ".4f"),
+                    safe_format(put_data.get('theta'), ".4f"),
+                    safe_format(put_data.get('delta'), ".4f"),
+                    safe_format(put_data.get('iv'), ".2f")
                 ]
                 
                 # Update cells with values
-                # Call columns mapping: 0=bid, 1=ask, 2=last, 3=change%, 4=volume, 5=gamma, 6=vega, 7=theta, 8=delta, 9=iv
-                greek_keys_call = ['bid', 'ask', 'last', 'change%', 'volume', 'gamma', 'vega', 'theta', 'delta', 'iv']
+                # Call columns mapping: 0=iv, 1=delta, 2=theta, 3=vega, 4=gamma, 5=volume, 6=change%, 7=last, 8=ask, 9=bid
+                greek_keys_call = ['iv', 'delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
                 
                 for col_idx, val in enumerate(call_values):
                     cell_updates.append((row_idx, col_idx, val))
                     
                     # CHANGE % column gets green/red background with WHITE text
-                    if col_idx == 3:  # CHANGE % column
+                    if col_idx == 6:  # CHANGE % column (now at index 6)
                         if call_change_pct > 0:
                             cell_bg = self.tws_colors['positive_bg']  # Green background
                             fg_color = self.tws_colors['fg']  # WHITE text
@@ -2456,15 +2456,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 cell_updates.append((row_idx, 10, strike_value))
                 cell_formats.append((row_idx, 10, self.tws_colors['strike_fg'], strike_bg))
                 
-                # Put columns mapping: 0=iv, 1=delta, 2=theta, 3=vega, 4=gamma, 5=volume, 6=change%, 7=last, 8=ask, 9=bid
-                greek_keys_put = ['iv', 'delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
+                # Put columns mapping: 0=bid, 1=ask, 2=last, 3=change%, 4=volume, 5=gamma, 6=vega, 7=theta, 8=delta, 9=iv
+                greek_keys_put = ['bid', 'ask', 'last', 'change%', 'volume', 'gamma', 'vega', 'theta', 'delta', 'iv']
                 
                 for col_offset, val in enumerate(put_values):
                     col_idx = 11 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
                     
                     # CHANGE % column gets green/red background with WHITE text
-                    if col_offset == 6:  # CHANGE % column
+                    if col_offset == 3:  # CHANGE % column (now at index 3, column 14)
                         if put_change_pct > 0:
                             cell_bg = self.tws_colors['positive_bg']  # Green background
                             fg_color = self.tws_colors['fg']  # WHITE text
