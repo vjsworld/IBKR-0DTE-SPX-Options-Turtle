@@ -3935,9 +3935,27 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             rows.append(row)
             total_pnl += pnl
         
-        # Only update sheet data if it has changed (prevents flashing)
+        # Compare data WITHOUT TimeSpan column (index 7) to avoid flashing
+        # TimeSpan changes every second but doesn't require full sheet redraw
         current_data = self.position_sheet.get_sheet_data()
-        if current_data != rows:
+        
+        # Check if significant data changed (excluding TimeSpan column)
+        data_changed = False
+        if len(current_data) != len(rows):
+            data_changed = True
+        else:
+            for i, (current_row, new_row) in enumerate(zip(current_data, rows)):
+                # Compare all columns except TimeSpan (index 7)
+                for col_idx in [0, 1, 2, 3, 4, 5, 6, 8]:
+                    if col_idx < len(current_row) and col_idx < len(new_row):
+                        if current_row[col_idx] != new_row[col_idx]:
+                            data_changed = True
+                            break
+                if data_changed:
+                    break
+        
+        if data_changed:
+            # Significant data changed - do full update with width reset
             self.position_sheet.set_sheet_data(rows)
             
             # Re-apply column widths (tksheet resets them on set_sheet_data)
@@ -3963,6 +3981,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 
                 # Style Close button: Red background, white text (index 8 - moved from 6 due to new columns)
                 self.position_sheet.highlight_cells(row=row_idx, column=8, fg="#FFFFFF", bg="#CC0000")
+        else:
+            # Only TimeSpan changed - update those cells individually (no flashing)
+            for row_idx, row in enumerate(rows):
+                time_span_str = row[7]  # TimeSpan column
+                self.position_sheet.set_cell_data(row_idx, 7, time_span_str)
         
         # Update total PnL label
         pnl_color = "#44FF44" if total_pnl >= 0 else "#FF4444"
