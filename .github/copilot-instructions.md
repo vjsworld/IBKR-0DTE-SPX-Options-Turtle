@@ -46,11 +46,11 @@ Bloomberg-style GUI application for automated 0DTE (Zero Days To Expiration) SPX
 ## Core Architecture
 
 ### Single-File Design Pattern
-- **Everything in `main.py`**: 2,699 lines containing all classes, GUI, trading logic, and IBKR integration
+- **Everything in `main.py`**: ~4200 lines containing all classes, GUI, trading logic, and IBKR integration
 - No modules/packages - optimize for vertical navigation within one file
 - Section markers use `# ============` for major components, `# ========` for subsections
 
-### Class Hierarchy (lines 47-335)
+### Class Hierarchy (lines 179-616)
 ```
 ConnectionState(Enum) → Connection state machine
 IBKRWrapper(EWrapper) → Handles IBKR API callbacks (incoming data)
@@ -67,9 +67,9 @@ SPXTradingApp(IBKRWrapper, IBKRClient) → Main app with multiple inheritance
 ## Key Data Structures
 
 ### Contract Key Format
-All options identified by standardized string: `"SPX_{strike}_{right}"` (e.g., `"SPX_5800.0_C"`)
+All options identified by standardized string: `"SPX_{strike}_{right}_{YYYYMMDD}"` (e.g., `"SPX_5800_C_20251021"`)
 - Used as dictionary keys throughout: `market_data`, `positions`, `historical_data`
-- Generated in `create_spxw_contract()` and `IBKRWrapper` callbacks
+- Generated in `get_contract_key()` and used in `IBKRWrapper` callbacks
 
 ### Critical State Dictionaries
 - `market_data`: Live bid/ask/last/volume/greeks keyed by contract_key
@@ -99,14 +99,14 @@ DISCONNECTED → CONNECTING → CONNECTED
 - **SecType**: "OPT"
 
 ### Expiration Date Handling
-- Format: "YYYYMMDD" (e.g., "20251020")
+- Format: "YYYYMMDD" (e.g., "20251021")
 - Calculated by `calculate_expiry_date(offset)` - handles weekends/holidays
-- Monday-Friday expirations for 0DTE
+- Monday/Wednesday/Friday expirations for SPX
 - User can switch expirations via dropdown (0 DTE, 1 DTE, etc.)
 
 ## Trading Strategy Implementation
 
-### Manual Trading Mode (NEW - lines 2118-2430)
+### Manual Trading Mode (lines 1400-1500)
 **Risk-based one-click trading with intelligent order management**
 
 #### Entry System:
@@ -120,13 +120,13 @@ DISCONNECTED → CONNECTING → CONNECTED
    - Prices ≥ $3.00: Round to $0.10 increments
    - Prices < $3.00: Round to $0.05 increments
 2. Monitor every 1 second (`manual_order_update_interval`)
-3. If mid-price moves ≥ $0.05 and order unfilled → cancel and replace at new mid
+3. If mid-price moves and order unfilled → cancel and replace at new mid
 4. Continue chasing until filled or manually cancelled
 5. Tracked in `manual_orders` dict with attempt counters and timestamps
 
 #### Exit System:
 - "[Close]" button in Positions grid Action column
-- Clicks trigger `on_position_tree_click()` handler
+- Clicks trigger `on_position_sheet_click()` handler
 - Exit orders use same mid-price chasing logic as entries
 - Confirmation dialog shows current P&L before closing
 
@@ -138,13 +138,13 @@ DISCONNECTED → CONNECTING → CONNECTED
 - `place_manual_order()`: Initiates order with tracking
 - `update_manual_orders()`: Background monitoring loop
 
-### Hourly Straddle Entry (`enter_straddle()` line 1918)
-1. Triggered at top of hour by `schedule_hourly_trading()` checking `datetime.now().minute == 0`
+### Hourly Straddle Entry (`check_trade_time()` -> `enter_straddle()`)
+1. Triggered at top of hour by `check_trade_time()` checking `datetime.now().minute == 0`
 2. Scans `market_data` for cheapest call/put with ask ≤ $0.50
 3. Places limit orders at ask price for both legs
 4. Tracks in `active_straddles` list with entry prices and timestamps
 
-### Supertrend Indicator (`calculate_supertrend()` line 2042)
+### Supertrend Indicator (`calculate_supertrend()` line 2800)
 - Uses ATR (Average True Range) with configurable period (default: 14)
 - Chandelier multiplier for trailing distance (default: 3.0)
 - Calculates on 1-minute historical bars
@@ -155,32 +155,32 @@ DISCONNECTED → CONNECTING → CONNECTED
 - Real-time update via `tickPrice()` callback → `update_position_pnl()`
 - Greeks streamed live via `tickOptionComputation()` callback
 
-## GUI Architecture (ttkbootstrap)
+## GUI Architecture (ttkbootstrap & tksheet)
 
 ### Theme: "darkly" with IBKR TWS Color Matching
 - **Background**: Pure black (#000000) to match TWS
-- **ITM Options**: Subtle green (#001a00 calls) / red (#1a0000 puts) tints
+- **ITM Options**: Subtle blue tint (`#0f1a2a`)
 - **OTM Options**: Pure black (#000000) with dimmed text (#808080)
 - **Text**: Green (#00ff00) for gains, Red (#ff0000) for losses
 
 ### Main Components
-- **Tab 1 (Trading)**: Option chain treeview, positions, orders, Supertrend chart, activity log
+- **Tab 1 (Trading)**: `tksheet` option chain, positions, orders, Supertrend charts, activity log
 - **Tab 2 (Settings)**: Connection params, strategy params, save functionality
 - **Status Bar**: Connection status, SPX price display, connect/disconnect buttons
 
-### Option Chain Treeview Layout
+### Option Chain (`tksheet`) Layout
 Mirrors IBKR TWS layout with calls on left, strike centered, puts on right:
 ```
-C_Bid | C_Ask | C_Last | ... | STRIKE | ... | P_Last | P_Ask | P_Bid
+C_IV | C_Delta | ... | C_Bid | C_Ask | STRIKE | P_Ask | P_Bid | ... | P_Delta | P_IV
 ```
-- Real-time updates every 500ms via `update_option_chain_display()`
-- Click handler for manual trading: `on_option_chain_click()`
+- Real-time updates via `update_option_sheet_display()`
+- Click handler for manual trading and chart selection: `on_option_sheet_click()`
 
 ## Settings Persistence
 - **File**: `settings.json` (auto-created on first save)
-- **Fields**: host, port, client_id, atr_period, chandelier_multiplier, strikes_above/below
+- **Fields**: host, port, client_id, atr_period, chandelier_multiplier, strikes_above/below, etc.
 - **Load**: Automatic on startup via `load_settings()` in `__init__`
-- **Save**: Manual via Settings tab or auto-save on reconnect
+- **Save**: Automatic on settings change or manual via Settings tab.
 
 ## Development Workflows
 
@@ -215,106 +215,29 @@ No build step - direct execution. Requires TWS/IB Gateway running and configured
 3. **Market Data Subscriptions**: Requires SPX + SPXW data subscriptions
 4. **Market Hours**: 9:30 AM - 4:00 PM ET for full functionality
 
-### Common Development Tasks
-
-**Adding New Market Data Fields:**
-1. Update `market_data` dict initialization (line ~1500s)
-2. Add column to option chain treeview setup (line ~640)
-3. Update `update_option_chain_display()` to populate new column
-4. Add callback handling in `IBKRWrapper.tickPrice/tickSize/tickOptionComputation`
-
-**Modifying Trading Logic:**
-- Entry logic: `enter_straddle()` (line 1851)
-- Exit logic: `calculate_supertrend()` + position monitoring loops
-- Risk management: Check `active_straddles` tracking and PnL calculations
-
-**Connection Issues:**
-- Review `ConnectionState` enum and state transitions
-- Check `error()` callback for error code handling (line 63)
-- Verify client ID rotation logic (line 86-93)
-
 ## IBKR API Quirks & Gotchas
 
 ### Request ID Management
-- Start at 1000: `next_req_id = 1000` (line 370)
+- Start at 1000: `next_req_id = 1000` (line 650)
 - Auto-increment for each market data or historical data request
 - Must track mapping: `reqId → contract_key` in `market_data_map`
 
-### Market Data Subscriptions
-- Each option requires separate `reqMktData()` call
-- Subscriptions persist until `cancelMktData()` called
-- Reconnection requires re-subscribing to ALL contracts (tracked in `subscribed_contracts`)
-
-### Error Code Reference (from `error()` callback)
+### Error Code Reference (from `error()` callback, line 193)
 - **326**: Client ID in use → rotate to next ID
 - **502/503/504**: Connection errors → trigger reconnect
 - **1100/2110**: Network disconnection → trigger reconnect
 - **354**: Market data not subscribed → warning only
 - **162/165/321**: Historical data permission issues (common in paper trading)
 
-### Historical Data Limitations
-- Paper trading accounts have restricted historical data access
-- Requests may fail with error 162 - handle gracefully with fallback logic
-- Always check `if reqId in historical_data_requests` before processing
-
-## Code Style & Patterns
-
-### Logging Convention
-Use `log_message(msg, level)` with levels: "ERROR", "WARNING", "SUCCESS", "INFO"
-- Separator bars: `"=" * 60` for major events
-- Detailed trade logging with strike, prices, deltas
-
-### Error Handling Pattern
-```python
-if self.connection_state != ConnectionState.CONNECTED:
-    self.log_message("Cannot perform action: Not connected", "WARNING")
-    return
-```
-Always check connection state before IBKR API calls.
-
 ### GUI Updates from Background Thread
 ```python
 # WRONG: Direct GUI update from API thread
-self.position_tree.insert(...)
+self.position_sheet.insert_row(...)
 
 # CORRECT: Queue update for main thread
 self.gui_queue.put(("update_position", contract_key, data))
-# Then process in main thread via root.after() polling
+# Then process in main thread via root.after() polling in process_gui_queue()
 ```
-
-## Virtual Environment Setup (IMPORTANT!)
-
-### First-Time Setup
-If cloning the repository for the first time:
-```powershell
-# Create virtual environment
-python -m venv .venv
-
-# Activate it
-.\.venv\Scripts\Activate.ps1
-
-# Install all dependencies
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-### Troubleshooting Import Errors
-If VS Code shows import errors (red squiggles):
-1. **Check Python interpreter**: Press `Ctrl+Shift+P` → "Python: Select Interpreter" → Choose `.venv\Scripts\python.exe`
-2. **Verify package installed in venv**:
-   ```powershell
-   .\.venv\Scripts\python.exe -m pip list
-   ```
-3. **Reinstall if missing**:
-   ```powershell
-   .\.venv\Scripts\python.exe -m pip install <package>
-   ```
-4. **Restart language server**: Press `Ctrl+Shift+P` → "Python: Restart Language Server"
-
-### Common Mistakes to Avoid
-- ❌ **DON'T**: Run `pip install <package>` without activating venv (installs to global Python)
-- ❌ **DON'T**: Use `python` command directly (might use wrong interpreter)
-- ✅ **DO**: Always use `.\.venv\Scripts\python.exe -m pip install <package>`
-- ✅ **DO**: Verify installation location with `pip show <package>`
 
 ## Critical Constraints
 - **Windows-primary**: Paths and shell commands assume Windows (PowerShell)

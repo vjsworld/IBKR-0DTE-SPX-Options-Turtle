@@ -19,6 +19,7 @@ from collections import defaultdict
 from enum import Enum
 import json
 import os
+import logging
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 import pandas as pd
 import numpy as np
@@ -37,11 +38,62 @@ from matplotlib.animation import FuncAnimation
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
-from ibapi.order import Order
+from ibapi.order import Order, UNSET_DOUBLE, UNSET_INTEGER
 from ibapi.common import TickerId, TickAttrib
 from ibapi.ticktype import TickType
 from scipy.stats import norm
 import math
+
+
+# ============================================================================
+# FILE LOGGING SETUP
+# ============================================================================
+
+def setup_file_logger():
+    """
+    Setup file logging with daily log files in logs/ directory
+    
+    Creates a new log file each day with format: YYYY-MM-DD.txt
+    All log entries are timestamped and arranged vertically
+    """
+    # Create logs directory if it doesn't exist
+    logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Create log filename with today's date
+    log_filename = datetime.now().strftime('%Y-%m-%d.txt')
+    log_filepath = os.path.join(logs_dir, log_filename)
+    
+    # Configure file logger
+    file_logger = logging.getLogger('SPXTradingApp')
+    file_logger.setLevel(logging.DEBUG)  # Capture everything
+    
+    # Remove existing handlers to avoid duplicates
+    file_logger.handlers.clear()
+    
+    # Create file handler
+    file_handler = logging.FileHandler(log_filepath, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    
+    # Create formatter with timestamp
+    formatter = logging.Formatter(
+        '[%(asctime)s] [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    file_logger.addHandler(file_handler)
+    
+    # Log startup
+    file_logger.info("=" * 80)
+    file_logger.info("SPX 0DTE Options Trading Application - Session Started")
+    file_logger.info("=" * 80)
+    
+    return file_logger
+
+# Initialize file logger
+file_logger = setup_file_logger()
 
 
 # ============================================================================
@@ -174,19 +226,37 @@ class IBKRWrapper(EWrapper):
         """
         error_msg = f"Error {errorCode}: {errorString}"
         
-        # Suppress expected/benign errors
-        if errorCode in [2104, 2106, 2158]:  # Informational messages
+        # Handle benign error codes first (before logging)
+        if errorCode == 10268:  # EtradeOnly attribute error (benign warning)
+            # This is a benign warning from TWS - orders still process correctly
+            # Log once to inform user, then suppress
+            if not hasattr(self.app, '_logged_10268'):
+                self.app._logged_10268 = True
+                self.app.log_message("ℹ Note: TWS reports 'eTradeOnly' attribute warnings - this is normal and can be ignored", "INFO")
+            return
+        
+        # CRITICAL: Log ALL errors for debugging order placement issues
+        # For order-related errors (reqId >= order_id range), always log
+        if reqId >= 1000 or errorCode not in [2104, 2106, 2158]:
+            # Special highlighting for order-related errors
+            if reqId >= 1000:
+                self.app.log_message(f"🚨 [ORDER ERROR] Order #{reqId}, Code={errorCode}, Msg={errorString}", "ERROR")
+            else:
+                self.app.log_message(f"[ERROR CALLBACK] ReqId={reqId}, Code={errorCode}, Msg={errorString}", "WARNING")
+        
+        # Data server connection confirmed (CRITICAL for order placement!)
+        if errorCode in [2104, 2106]:  # "Market data farm connection is OK"
+            self.app.log_message("✓ Data server connection confirmed - ready for trading", "SUCCESS")
+            self.app.data_server_ok = True
+            return
+        
+        # Security definition server OK
+        if errorCode == 2158:  # "Sec-def data farm connection is OK"
+            self.app.log_message("✓ Security definition server OK", "INFO")
             return
         
         if errorCode == 10147:  # Order already filled/cancelled
             self.app.log_message(f"Order {reqId} already processed (fill or cancel)", "INFO")
-            return
-        
-        if errorCode == 10268:  # EtradeOnly attribute error (benign)
-            # This shouldn't happen with our code, but if it does, just log once
-            if not hasattr(self.app, '_logged_10268'):
-                self.app._logged_10268 = True
-                self.app.log_message("Note: Ignoring EtradeOnly attribute warnings (not supported in paper trading)", "INFO")
             return
         
         # Log all other errors
@@ -282,6 +352,18 @@ class IBKRWrapper(EWrapper):
         self.app.client_id_iterator = 1  # Reset client ID iterator for next connection
         self.app.log_message(f"Successfully connected to IBKR with Client ID {self.app.client_id}! Next Order ID: {orderId}", "SUCCESS")
         self.app.on_connected()
+    
+    def managedAccounts(self, accountsList: str):
+        """
+        Receives the list of managed accounts.
+        CRITICAL: Must set account in orders or TWS may silently reject them!
+        Per working example: use LAST account in list (usually paper trading account)
+        """
+        self.app.managed_accounts = accountsList.split(',')
+        # Use LAST account (per working example - usually the paper trading account)
+        self.app.account = self.app.managed_accounts[-1] if self.app.managed_accounts else ""
+        self.app.log_message(f"✓ Managed accounts: {accountsList}", "SUCCESS")
+        self.app.log_message(f"✓ Using account (LAST in list): {self.app.account}", "SUCCESS")
     
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str,
                                          underlyingConId: int, tradingClass: str,
@@ -390,17 +472,29 @@ class IBKRWrapper(EWrapper):
         self.app.order_status[orderId] = order_info
         self.app.log_message(f"Order {orderId}: {status} - Filled: {filled} @ {avgFillPrice}", "INFO")
         
+        # Update order display in GUI
+        self.app.update_order_in_tree(orderId, status, avgFillPrice if avgFillPrice > 0 else None)
+        
         # If order is filled, update position
         if status == "Filled" and orderId in self.app.pending_orders:
             contract_key, action, quantity = self.app.pending_orders[orderId]
             self.app.update_position_on_fill(contract_key, action, quantity, avgFillPrice)
             del self.app.pending_orders[orderId]
+            
+            # Also remove from manual_orders tracking if present
+            if orderId in self.app.manual_orders:
+                del self.app.manual_orders[orderId]
     
     def openOrder(self, orderId: int, contract: Contract, order: Order,
                  orderState):
-        """Receives open order information"""
+        """Receives open order information - confirms TWS received the order"""
         contract_key = self.app.get_contract_key(contract)
-        self.app.log_message(f"Open Order {orderId}: {contract_key} {order.action} {order.totalQuantity}", "INFO")
+        self.app.log_message(f"=" * 60, "SUCCESS")
+        self.app.log_message(f"✓✓✓ TWS RECEIVED Order #{orderId} ✓✓✓", "SUCCESS")
+        self.app.log_message(f"Contract: {contract_key}", "INFO")
+        self.app.log_message(f"Action: {order.action} {order.totalQuantity} @ ${order.lmtPrice:.2f}", "INFO")
+        self.app.log_message(f"Order State: {orderState.status}", "INFO")
+        self.app.log_message(f"=" * 60, "SUCCESS")
     
     def position(self, account: str, contract: Contract, position: float,
                 avgCost: float):
@@ -574,6 +668,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Connection management
         self.connection_state = ConnectionState.DISCONNECTED
+        self.data_server_ok = False  # CRITICAL: Must receive 2104/2106 before placing orders
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10  # Increased to 10 attempts
         self.reconnect_delay = 5
@@ -587,6 +682,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.client_id_iterator = 1  # Current client ID being tried
         self.max_client_id = 10  # Maximum client ID to try
         self.handling_client_id_error = False  # Flag to prevent double reconnect
+        self.managed_accounts = []  # List of managed accounts from TWS
+        self.account = ""  # Current account for order placement
         
         # Strategy parameters
         self.atr_period = 14
@@ -1022,7 +1119,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths using column_width method
         # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
-        for col_idx, width in enumerate([230, 50, 80, 80, 100, 80, 100, 90, 70]):
+        for col_idx, width in enumerate([210, 50, 80, 80, 100, 80, 100, 90, 70]):
             self.position_sheet.column_width(column=col_idx, width=width)
         
         # Set column alignments: left for Contract (0), center for all others
@@ -1066,7 +1163,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths
         self.order_sheet.column_width(column=0, width=80)   # Order ID
-        self.order_sheet.column_width(column=1, width=230)  # Contract (+50px)
+        self.order_sheet.column_width(column=1, width=210)  # Contract (+50px)
         self.order_sheet.column_width(column=2, width=60)   # Action
         self.order_sheet.column_width(column=3, width=50)   # Qty
         self.order_sheet.column_width(column=4, width=80)   # Price
@@ -1557,6 +1654,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message(f"Error during disconnect: {str(e)}", "WARNING")
         
         self.connection_state = ConnectionState.DISCONNECTED
+        self.data_server_ok = False  # Reset data server flag on disconnect
         self.client_id_iterator = 1  # Reset client ID iterator for next connection
         self.status_label.config(text="Status: Disconnected")
         self.connect_btn.config(text="Connect", state=tk.NORMAL)
@@ -1832,9 +1930,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def calculate_expiry_date(self, offset: int) -> str:
         """
         Calculate expiration date based on offset.
-        offset = 0: Today (0DTE)
-        offset = 1: Next trading day
-        offset = 2: Day after next, etc.
+        offset = 0: Today (0DTE) - if today is Mon/Wed/Fri
+        offset = 1: Next trading day expiration
+        offset = 2: Day after next expiration, etc.
         
         For SPX options, expirations are Mon/Wed/Fri.
         """
@@ -1851,11 +1949,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         expirations_found = 0
         
         # Find the Nth expiration (where N = offset)
-        while expirations_found <= offset:
+        # If offset=0 and today is an expiry day, return today
+        while True:
             if target_date.weekday() in expiry_days:
                 if expirations_found == offset:
                     return target_date.strftime("%Y%m%d")
                 expirations_found += 1
+            
             target_date += timedelta(days=1)
             days_checked += 1
             
@@ -1939,13 +2039,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         Returns:
             Contract object ready for IBKR API calls
+        
+        NOTE: For SPX weekly options (0DTE), MUST use tradingClass="SPXW"
         """
         contract = Contract()
         contract.symbol = symbol
         contract.secType = "OPT"
         contract.currency = "USD"
         contract.exchange = "SMART"
-        contract.tradingClass = trading_class
+        contract.tradingClass = trading_class  # "SPXW" for SPX weeklies
         contract.strike = strike
         contract.right = right  # "C" or "P"
         contract.lastTradeDateOrContractMonth = self.current_expiry
@@ -2578,7 +2680,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message(f"Found {calls_found} calls and {puts_found} puts with ask <= $0.50", "INFO")
         
         # Place orders if we found both legs
-        if best_call and best_put:
+        if best_call and best_put and best_call_key and best_put_key:
             total_cost = best_call['ask'] + best_put['ask']
             self.log_message(
                 f"STRADDLE SELECTED - Total cost: ${total_cost:.2f}", 
@@ -2595,17 +2697,27 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 "INFO"
             )
             
-            # Place call order
+            # Place call order (automated - no chasing)
             self.log_message("Placing CALL order...", "INFO")
-            call_order_id = self.place_limit_order(best_call['contract'], "BUY", 1, 
-                                                   best_call['ask'])
-            self.pending_orders[call_order_id] = (best_call_key, "BUY", 1)
+            call_order_id = self.place_order(
+                contract_key=best_call_key,
+                contract=best_call['contract'],
+                action="BUY",
+                quantity=1,
+                limit_price=best_call['ask'],
+                enable_chasing=False  # Automated orders don't chase
+            )
             
-            # Place put order
+            # Place put order (automated - no chasing)
             self.log_message("Placing PUT order...", "INFO")
-            put_order_id = self.place_limit_order(best_put['contract'], "BUY", 1, 
-                                                  best_put['ask'])
-            self.pending_orders[put_order_id] = (best_put_key, "BUY", 1)
+            put_order_id = self.place_order(
+                contract_key=best_put_key,
+                contract=best_put['contract'],
+                action="BUY",
+                quantity=1,
+                limit_price=best_put['ask'],
+                enable_chasing=False  # Automated orders don't chase
+            )
             
             # Track straddle for risk management
             straddle_info = {
@@ -2628,52 +2740,197 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.log_message("=" * 60, "INFO")
     
-    def place_limit_order(self, contract: Contract, action: str, quantity: int, 
-                         limit_price: float) -> int:
-        """Place a limit order"""
+    def place_order(self, contract_key: str, contract: Contract, action: str, 
+                   quantity: int, limit_price: float, 
+                   enable_chasing: bool = False, stop_price: float | None = None) -> int | None:
+        """
+        Universal order placement function - handles all order types
+        
+        Args:
+            contract_key: Standardized contract identifier (e.g., "SPX_5800.0_C_20251020")
+            contract: IBKR Contract object with all fields populated
+            action: "BUY" or "SELL"
+            quantity: Number of contracts
+            limit_price: Limit price per contract
+            enable_chasing: If True, enables mid-price chasing for manual orders
+            stop_price: Optional stop price for stop-limit orders
+        
+        Returns:
+            order_id: IBKR order ID for tracking
+        
+        Order Types:
+            - Limit Order: stop_price=None, enable_chasing=False (automated straddles)
+            - Stop-Limit Order: stop_price=value (exit orders with stops)
+            - Manual Order with Chasing: enable_chasing=True (manual trading mode)
+        """
+        # CRITICAL: Check connection state AND data server readiness
+        if self.connection_state != ConnectionState.CONNECTED:
+            self.log_message("✗ Cannot place order: Not connected to IBKR", "ERROR")
+            return None
+        
+        if not self.data_server_ok:
+            self.log_message("✗ Cannot place order: Data server not ready (waiting for 2104/2106 message)", "ERROR")
+            return None
+        
+        # Validate contract fields
+        if not contract or not contract.symbol or not contract.secType:
+            self.log_message(f"✗ ERROR: Invalid contract - missing symbol or secType", "ERROR")
+            return None
+        
+        if not contract.lastTradeDateOrContractMonth:
+            self.log_message(f"✗ ERROR: Invalid contract - missing expiration date", "ERROR")
+            return None
+        
+        if not contract.strike or contract.strike <= 0:
+            self.log_message(f"✗ ERROR: Invalid contract - missing or invalid strike", "ERROR")
+            return None
+        
+        if not contract.right or contract.right not in ["C", "P"]:
+            self.log_message(f"✗ ERROR: Invalid contract - missing or invalid right (C/P)", "ERROR")
+            return None
+        
+        # Ensure required contract fields are set
+        if not contract.exchange:
+            contract.exchange = "SMART"
+        if not contract.currency:
+            contract.currency = "USD"
+        if not contract.multiplier:
+            contract.multiplier = "100"
+        
+        # CRITICAL: SPX options REQUIRE tradingClass="SPXW" for 0DTE
+        if contract.symbol == "SPX" and not contract.tradingClass:
+            contract.tradingClass = "SPXW"
+            self.log_message(f"Set tradingClass = SPXW for SPX contract", "INFO")
+        
+        # DIAGNOSTIC: Validate contract has ALL required fields
+        missing_fields = []
+        if not contract.symbol: missing_fields.append("symbol")
+        if not contract.secType: missing_fields.append("secType")
+        if not contract.exchange: missing_fields.append("exchange")
+        if not contract.currency: missing_fields.append("currency")
+        if not contract.multiplier: missing_fields.append("multiplier")
+        if not contract.lastTradeDateOrContractMonth: missing_fields.append("lastTradeDateOrContractMonth")
+        if not contract.strike or contract.strike <= 0: missing_fields.append("strike")
+        if not contract.right: missing_fields.append("right")
+        
+        if missing_fields:
+            self.log_message(f"❌ CONTRACT VALIDATION FAILED! Missing fields: {', '.join(missing_fields)}", "ERROR")
+            return None
+        
+        self.log_message(f"✓ Contract validation passed - all required fields present", "INFO")
+        
+        # Create a clean order object to avoid sending invalid default values
         order = Order()
         order.action = action
         order.totalQuantity = quantity
-        order.orderType = "LMT"
+        order.orderType = "LMT"  # Default to LMT
         order.lmtPrice = limit_price
         order.tif = "DAY"
         order.transmit = True
         
+        # CRITICAL: Set problematic fields to proper values
+        # These fields have invalid defaults that cause silent rejection
+        order.eTradeOnly = False  # NOT for E*TRADE only
+        order.firmQuoteOnly = False  # Allow regular market quotes
+        order.auxPrice = UNSET_DOUBLE  # Clear auxPrice for LMT orders
+        order.minQty = UNSET_INTEGER  # No minimum quantity requirement
+        
+        # Set account if available
+        if self.account:
+            order.account = self.account
+        
+        # Set order type based on parameters
+        if stop_price is not None:
+            order.orderType = "STP LMT"
+            order.auxPrice = stop_price
+            order_type_display = f"STP LMT (Stop: ${stop_price:.2f}, Limit: ${limit_price:.2f})"
+        else:
+            # Simple LMT order - don't set auxPrice at all (let IBKR use default)
+            order.orderType = "LMT"
+            order_type_display = f"LMT @ ${limit_price:.2f}"
+        
+        # Get order ID
         order_id = self.next_order_id
         self.next_order_id += 1
         
-        self.placeOrder(order_id, contract, order)
+        # Log order details
+        self.log_message(f"=== PLACING ORDER #{order_id} ===", "INFO")
+        self.log_message(f"Contract: {contract.symbol} {contract.strike}{contract.right} {contract.lastTradeDateOrContractMonth}", "INFO")
+        self.log_message(f"Order: {action} {quantity} {order_type_display}", "INFO")
+        self.log_message(f"TradingClass: {contract.tradingClass if contract.tradingClass else 'None'}", "INFO")
+        self.log_message(f"Exchange: {contract.exchange}", "INFO")
+        self.log_message(f"Account: {order.account if order.account else 'None'}", "INFO")
+        self.log_message(f"Mid-Price Chasing: {'ENABLED' if enable_chasing else 'DISABLED'}", "INFO")
         
-        self.log_message(f"Placed {action} order #{order_id}: {quantity} @ ${limit_price:.2f}", 
-                        "INFO")
+        # ========================================================================
+        # CRITICAL: Detailed object logging before placing order
+        # ========================================================================
+        self.log_message("-" * 20 + " CONTRACT DETAILS " + "-" * 20, "INFO")
+        for key, value in vars(contract).items():
+            if value:  # Only log populated fields
+                self.log_message(f"  - {key}: {value}", "INFO")
         
-        # Add to order tree
+        self.log_message("-" * 20 + " ORDER DETAILS " + "-" * 20, "INFO")
+        for key, value in vars(order).items():
+            # Log all fields, even if default, to be thorough
+            self.log_message(f"  - {key}: {value}", "INFO")
+        self.log_message("-" * 58, "INFO")
+        # ========================================================================
+        
+        # Track order for callbacks
+        self.pending_orders[order_id] = (contract_key, action, quantity)
+        
+        # If chasing enabled, track for price monitoring
+        if enable_chasing:
+            self.manual_orders[order_id] = {
+                'contract_key': contract_key,
+                'contract': contract,
+                'action': action,
+                'quantity': quantity,
+                'initial_mid': limit_price,
+                'last_mid': limit_price,
+                'attempts': 1,
+                'timestamp': datetime.now(),
+                'order': order
+            }
+        
+        # Place the order via IBKR API
+        try:
+            self.placeOrder(order_id, contract, order)
+            self.log_message(f"✓ placeOrder() API call completed for order #{order_id}", "SUCCESS")
+            self.log_message(f"⏳ Waiting for TWS callbacks...", "INFO")
+            self.log_message(f"   Expected callbacks:", "INFO")
+            self.log_message(f"   1. orderStatus() with status 'PreSubmitted' or 'Submitted'", "INFO")
+            self.log_message(f"   2. openOrder() with full order details", "INFO")
+            self.log_message(f"   If no callbacks within 3 seconds, check TWS Order Management window", "WARNING")
+            
+            # Schedule a timeout check to see if order was accepted
+            if self.root:
+                def check_order_callback():
+                    if order_id in self.pending_orders:
+                        self.log_message(f"⚠️ WARNING: No callbacks received for order #{order_id} after 3 seconds", "WARNING")
+                        self.log_message(f"   This usually means:", "WARNING")
+                        self.log_message(f"   1. TWS rejected the order silently (check TWS Messages)", "WARNING")
+                        self.log_message(f"   2. Order precautions not bypassed (check TWS API settings)", "WARNING")
+                        self.log_message(f"   3. Contract format issue (check TradingClass)", "WARNING")
+                self.root.after(3000, check_order_callback)
+                
+        except Exception as e:
+            self.log_message(f"✗ EXCEPTION during placeOrder(): {e}", "ERROR")
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            # Clean up tracking
+            if order_id in self.manual_orders:
+                del self.manual_orders[order_id]
+            if order_id in self.pending_orders:
+                del self.pending_orders[order_id]
+            return None
+        
+        # Add to order tree display
         self.add_order_to_tree(order_id, contract, action, quantity, limit_price, "Submitted")
         
-        return order_id
-    
-    def place_stop_limit_order(self, contract: Contract, action: str, quantity: int,
-                              stop_price: float, limit_price: float) -> int:
-        """Place a stop-limit order"""
-        order = Order()
-        order.action = action
-        order.totalQuantity = quantity
-        order.orderType = "STP LMT"
-        order.auxPrice = stop_price
-        order.lmtPrice = limit_price
-        order.tif = "DAY"
-        order.transmit = True
-        
-        order_id = self.next_order_id
-        self.next_order_id += 1
-        
-        self.placeOrder(order_id, contract, order)
-        
-        self.log_message(f"Placed {action} STP LMT order #{order_id}: {quantity} @ "
-                        f"Stop ${stop_price:.2f} Limit ${limit_price:.2f}", "INFO")
-        
-        # Add to order tree
-        self.add_order_to_tree(order_id, contract, action, quantity, limit_price, "Submitted")
+        # Start monitoring if chasing enabled
+        if enable_chasing and self.root:
+            self.root.after(self.manual_order_update_interval, self.update_manual_orders)
         
         return order_id
     
@@ -2877,10 +3134,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         Manual trading: Buy call option
         Finds closest strike to max risk and places mid-price order with chasing
         """
+        self.log_message("=" * 60, "INFO")
+        self.log_message("🔔 BUY CALL BUTTON CLICKED 🔔", "SUCCESS")
+        self.log_message("=" * 60, "INFO")
+        
         try:
             if self.connection_state != ConnectionState.CONNECTED:
-                self.log_message("Cannot place order: Not connected to IBKR", "ERROR")
+                self.log_message("❌ Cannot place order: Not connected to IBKR", "ERROR")
                 messagebox.showerror("Not Connected", "Please connect to IBKR before trading")
+                return
+            
+            if not self.data_server_ok:
+                self.log_message("❌ Cannot place order: Data server not ready", "ERROR")
+                messagebox.showerror("Not Ready", "Data server not ready. Please wait for confirmation message.")
                 return
             
             try:
@@ -2892,11 +3158,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
                 return
             
-            self.log_message("=" * 60, "INFO")
             self.log_message("MANUAL BUY CALL INITIATED", "SUCCESS")
             
             result = self.find_option_by_max_risk("C", max_risk)
             if not result:
+                self.log_message("No suitable call options found", "WARNING")
                 messagebox.showwarning("No Options Found", 
                                         f"No call options found with risk ≤ ${max_risk:.2f}")
                 return
@@ -2909,8 +3175,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.log_message("Cannot calculate mid price - using ask price", "WARNING")
                 mid_price = ask_price
             
-            # Place order with mid-price chasing
-            self.place_manual_order(contract_key, contract, "BUY", 1, mid_price)
+            # Place order with mid-price chasing enabled
+            order_id = self.place_order(
+                contract_key=contract_key,
+                contract=contract,
+                action="BUY",
+                quantity=1,
+                limit_price=mid_price,
+                enable_chasing=True  # Manual orders chase the mid-price
+            )
+            
+            if order_id:
+                self.log_message(f"Manual CALL order #{order_id} submitted with mid-price chasing", "SUCCESS")
             self.log_message("=" * 60, "INFO")
             
         except Exception as e:
@@ -2956,8 +3232,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.log_message("Cannot calculate mid price - using ask price", "WARNING")
                 mid_price = ask_price
             
-            # Place order with mid-price chasing
-            self.place_manual_order(contract_key, contract, "BUY", 1, mid_price)
+            # Place order with mid-price chasing enabled
+            order_id = self.place_order(
+                contract_key=contract_key,
+                contract=contract,
+                action="BUY",
+                quantity=1,
+                limit_price=mid_price,
+                enable_chasing=True  # Manual orders chase the mid-price
+            )
+            
+            if order_id:
+                self.log_message(f"Manual PUT order #{order_id} submitted with mid-price chasing", "SUCCESS")
             self.log_message("=" * 60, "INFO")
             
         except Exception as e:
@@ -2965,98 +3251,6 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             import traceback
             self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
             messagebox.showerror("Error", f"Failed to place put order: {e}")
-    
-    def place_manual_order(self, contract_key: str, contract: Contract, 
-                           action: str, quantity: int, initial_price: float):
-        """
-        Place manual order with intelligent mid-price chasing
-        
-        Order Management Strategy:
-        1. Place limit order at mid-price (rounded to SPX increments)
-        2. Monitor order status and market movement every 1 second
-        3. If mid-price moves away and order unfilled, cancel and replace
-        4. Continue until filled or manually cancelled
-        
-        This implements IBKR best practices for retail options trading:
-        - Start passive (at mid) to get best execution
-        - Chase the market only when necessary
-        - Avoid aggressive market orders that give up edge
-        """
-        # Validate contract fields before placing order
-        if not contract.symbol or not contract.secType:
-            self.log_message(f"ERROR: Invalid contract - missing symbol or secType", "ERROR")
-            return
-        
-        if not contract.exchange:
-            contract.exchange = "SMART"
-            self.log_message(f"Set contract.exchange = SMART", "INFO")
-        
-        if contract.symbol == "SPX" and not contract.tradingClass:
-            contract.tradingClass = "SPXW"
-            self.log_message(f"Set contract.tradingClass = SPXW", "INFO")
-        
-        if not contract.currency:
-            contract.currency = "USD"
-            self.log_message(f"Set contract.currency = USD", "INFO")
-        
-        # Log detailed contract information before placing order
-        self.log_message(f"CONTRACT DETAILS for order #{self.next_order_id}:", "INFO")
-        self.log_message(f"  Symbol: {contract.symbol}", "INFO")
-        self.log_message(f"  SecType: {contract.secType}", "INFO")
-        self.log_message(f"  Exchange: {contract.exchange}", "INFO")
-        self.log_message(f"  Currency: {contract.currency}", "INFO")
-        self.log_message(f"  Strike: {contract.strike}", "INFO")
-        self.log_message(f"  Right: {contract.right}", "INFO")
-        self.log_message(f"  LastTradeDateOrContractMonth: {contract.lastTradeDateOrContractMonth}", "INFO")
-        self.log_message(f"  Multiplier: {contract.multiplier}", "INFO")
-        self.log_message(f"  TradingClass: {contract.tradingClass}", "INFO")
-        
-        order = Order()
-        order.action = action
-        order.totalQuantity = quantity
-        order.orderType = "LMT"
-        order.lmtPrice = initial_price
-        order.tif = "DAY"
-        order.transmit = True
-        
-        order_id = self.next_order_id
-        self.next_order_id += 1
-        
-        self.log_message(f"Placing order #{order_id}: {action} {quantity} {contract.symbol} {contract.strike}{contract.right} @ ${initial_price:.2f}", "INFO")
-        
-        # Track this manual order for price chasing
-        self.manual_orders[order_id] = {
-            'contract_key': contract_key,
-            'contract': contract,
-            'action': action,
-            'quantity': quantity,
-            'initial_mid': initial_price,
-            'last_mid': initial_price,
-            'attempts': 1,
-            'timestamp': datetime.now()
-        }
-        
-        # Place the order and log any immediate errors
-        try:
-            self.placeOrder(order_id, contract, order)
-            self.pending_orders[order_id] = (contract_key, action, quantity)
-            self.log_message(f"✓ placeOrder() call completed for order #{order_id}", "SUCCESS")
-        except Exception as e:
-            self.log_message(f"✗ FAILED to place order #{order_id}: {e}", "ERROR")
-            import traceback
-            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
-            raise
-        
-        self.log_message(
-            f"Manual {action} order #{order_id}: {contract_key} x{quantity} @ ${initial_price:.2f} (mid-price)",
-            "SUCCESS"
-        )
-        
-        self.add_order_to_tree(order_id, contract, action, quantity, initial_price, "Chasing Mid")
-        
-        # Start monitoring this order
-        if self.root:
-            self.root.after(self.manual_order_update_interval, self.update_manual_orders)
     
     def update_manual_orders(self):
         """
@@ -3207,7 +3401,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message(f"Exit order: {action} {quantity} @ ${mid_price:.2f}", "INFO")
             self.log_message(f"Contract: {exit_contract.symbol} {exit_contract.strike} {exit_contract.right} {exit_contract.lastTradeDateOrContractMonth}", "INFO")
             
-            self.place_manual_order(matching_key, exit_contract, action, quantity, mid_price)
+            # Place sell order with mid-price chasing
+            order_id = self.place_order(
+                contract_key=matching_key,
+                contract=exit_contract,
+                action=action,
+                quantity=quantity,
+                limit_price=mid_price,
+                enable_chasing=True  # Exit orders also chase the mid-price
+            )
+            
+            if order_id:
+                self.log_message(f"Exit order #{order_id} submitted with mid-price chasing", "SUCCESS")
             self.log_message("=" * 60, "INFO")
             
         except Exception as e:
@@ -3364,7 +3569,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 
                 # Use current bid as limit price
                 current_bid = self.market_data[contract_key]['bid']
-                self.place_limit_order(contract, "SELL", quantity, current_bid)
+                
+                # Place exit order using unified function
+                self.place_order(
+                    contract_key=contract_key,
+                    contract=contract,
+                    action="SELL",
+                    quantity=quantity,
+                    limit_price=current_bid,
+                    enable_chasing=False  # Supertrend exits don't chase
+                )
     
     def update_chart(self, contract_key: str):
         """Update the matplotlib chart with supertrend - DEPRECATED, kept for compatibility"""
@@ -3841,7 +4055,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.order_sheet.set_sheet_data(current_data)
             
             # Re-apply column widths (only when row count changes)
-            for col_idx, width in enumerate([80, 230, 60, 50, 80, 100, 80]):
+            for col_idx, width in enumerate([80, 210, 60, 50, 80, 100, 80]):
                 self.order_sheet.column_width(column=col_idx, width=width)
             
             # Apply yellow background to Cancel button (column 6)
@@ -3866,7 +4080,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                         # Update sheet (row count changed)
                         self.order_sheet.set_sheet_data(data)
                         # Re-apply column widths (only when row count changes)
-                        for col_idx, width in enumerate([80, 230, 60, 50, 80, 100, 80]):
+                        for col_idx, width in enumerate([80, 210, 60, 50, 80, 100, 80]):
                             self.order_sheet.column_width(column=col_idx, width=width)
                     else:
                         # Update cells individually (preserves column widths)
@@ -4004,7 +4218,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def log_message(self, message: str, level: str = "INFO"):
         """
-        Log a message to both the GUI and console.
+        Log a message to GUI, console, AND file.
         
         Args:
             message: The message to log
@@ -4020,6 +4234,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Console log (no emojis, plain text)
         console_message = f"[{timestamp}] [{level}] {message}"
         print(console_message)
+        
+        # FILE LOG - Write to daily log file
+        # Map our custom levels to standard logging levels
+        if level == "ERROR":
+            file_logger.error(message)
+        elif level == "WARNING":
+            file_logger.warning(message)
+        elif level == "SUCCESS":
+            file_logger.info(f"✓ {message}")
+        else:  # INFO or any other level
+            file_logger.info(message)
         
         # Keep log size manageable
         if int(self.log_text.index('end-1c').split('.')[0]) > 1000:
