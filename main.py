@@ -1298,16 +1298,22 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.host_entry = ttk.Entry(conn_frame, width=30)
         self.host_entry.insert(0, self.host)
         self.host_entry.grid(row=0, column=1, sticky=W, padx=10, pady=5)
+        self.host_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.host_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(conn_frame, text="Port:").grid(row=1, column=0, sticky=W, pady=5)
         self.port_entry = ttk.Entry(conn_frame, width=30)
         self.port_entry.insert(0, str(self.port))
         self.port_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
+        self.port_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.port_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(conn_frame, text="Client ID:").grid(row=2, column=0, sticky=W, pady=5)
         self.client_entry = ttk.Entry(conn_frame, width=30)
         self.client_entry.insert(0, str(self.client_id))
         self.client_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
+        self.client_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.client_entry.bind('<Return>', self.auto_save_settings)
         
         # Strategy Settings Section
         strategy_frame = ttk.LabelFrame(scrollable_frame, text="Strategy Parameters",
@@ -1319,30 +1325,40 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.atr_entry = ttk.Entry(strategy_frame, width=30)
         self.atr_entry.insert(0, str(self.atr_period))
         self.atr_entry.grid(row=0, column=1, sticky=W, padx=10, pady=5)
+        self.atr_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.atr_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(strategy_frame, text="Chandelier Exit Multiplier:").grid(
             row=1, column=0, sticky=W, pady=5)
         self.chandelier_entry = ttk.Entry(strategy_frame, width=30)
         self.chandelier_entry.insert(0, str(self.chandelier_multiplier))
         self.chandelier_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
+        self.chandelier_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.chandelier_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(strategy_frame, text="Strikes Above SPX:").grid(
             row=2, column=0, sticky=W, pady=5)
         self.strikes_above_entry = ttk.Entry(strategy_frame, width=30)
         self.strikes_above_entry.insert(0, str(self.strikes_above))
         self.strikes_above_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
+        self.strikes_above_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.strikes_above_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(strategy_frame, text="Strikes Below SPX:").grid(
             row=3, column=0, sticky=W, pady=5)
         self.strikes_below_entry = ttk.Entry(strategy_frame, width=30)
         self.strikes_below_entry.insert(0, str(self.strikes_below))
         self.strikes_below_entry.grid(row=3, column=1, sticky=W, padx=10, pady=5)
+        self.strikes_below_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.strikes_below_entry.bind('<Return>', self.auto_save_settings)
         
         ttk.Label(strategy_frame, text="Chain Refresh Interval (seconds):").grid(
             row=4, column=0, sticky=W, pady=5)
         self.chain_refresh_entry = ttk.Entry(strategy_frame, width=30)
         self.chain_refresh_entry.insert(0, str(self.chain_refresh_interval))
         self.chain_refresh_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
+        self.chain_refresh_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.chain_refresh_entry.bind('<Return>', self.auto_save_settings)
         
         # Strategy Automation Control
         ttk.Label(strategy_frame, text="Strategy Automation:").grid(
@@ -1387,9 +1403,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                   command=self.save_and_reconnect,
                   style="success.TButton", width=20).pack(side=LEFT, padx=5)
         
-        ttk.Button(button_frame, text="Save Settings", 
-                  command=self.save_settings,
-                  style="info.TButton", width=20).pack(side=LEFT, padx=5)
+        ttk.Label(button_frame, text="All settings auto-save on change",
+                 font=("Arial", 9, "italic"),
+                 foreground="#808080").pack(side=LEFT, padx=15)
         
         canvas.pack(side=LEFT, fill=BOTH, expand=YES)
         scrollbar.pack(side=RIGHT, fill=Y)
@@ -1649,6 +1665,51 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message("Settings saved successfully", "SUCCESS")
         except Exception as e:
             self.log_message(f"Error saving settings: {str(e)}", "ERROR")
+    
+    def auto_save_settings(self, event=None):
+        """Auto-save settings when any field changes (silent save without log message)"""
+        try:
+            if not hasattr(self, 'host_entry'):
+                return  # GUI not fully initialized yet
+            
+            # Read values from entries (with validation)
+            try:
+                self.host = self.host_entry.get()
+                self.port = int(self.port_entry.get())
+                self.client_id = int(self.client_entry.get())
+                self.atr_period = int(self.atr_entry.get())
+                self.chandelier_multiplier = float(self.chandelier_entry.get())
+                self.strikes_above = int(self.strikes_above_entry.get())
+                self.strikes_below = int(self.strikes_below_entry.get())
+                self.chain_refresh_interval = int(self.chain_refresh_entry.get())
+            except (ValueError, AttributeError):
+                # Skip save if validation fails (user still typing)
+                return
+            
+            settings = {
+                'host': self.host,
+                'port': self.port,
+                'client_id': self.client_id,
+                'atr_period': self.atr_period,
+                'chandelier_multiplier': self.chandelier_multiplier,
+                'strikes_above': self.strikes_above,
+                'strikes_below': self.strikes_below,
+                'chain_refresh_interval': self.chain_refresh_interval,
+                'strategy_enabled': self.strategy_enabled,
+                # Chart settings
+                'call_days': self.call_days_var.get() if hasattr(self, 'call_days_var') else '1',
+                'call_timeframe': self.call_timeframe_var.get() if hasattr(self, 'call_timeframe_var') else '1 min',
+                'put_days': self.put_days_var.get() if hasattr(self, 'put_days_var') else '5',
+                'put_timeframe': self.put_timeframe_var.get() if hasattr(self, 'put_timeframe_var') else '1 min'
+            }
+            
+            with open('settings.json', 'w') as f:
+                json.dump(settings, f, indent=4)
+            
+            # Silent save - no log message to avoid spam
+        except Exception as e:
+            # Silent fail for auto-save
+            pass
     
     def load_settings(self):
         """Load settings from file"""
@@ -3440,6 +3501,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
         self.update_call_chart()
+        # Auto-save chart settings
+        self.save_settings()
     
     def on_put_settings_changed(self):
         """Handle put chart settings change - clear data and refresh"""
@@ -3449,6 +3512,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             if contract_key in self.historical_data:
                 del self.historical_data[contract_key]
         self.update_put_chart()
+        # Auto-save chart settings
+        self.save_settings()
     
     def update_call_chart(self):
         """
