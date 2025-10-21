@@ -2689,25 +2689,21 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def on_option_sheet_click(self, event):
         """Handle click on option chain tksheet to update charts"""
         try:
-            # Get selected cell from sheet
-            selection = self.option_sheet.get_currently_selected()
-            if not selection:
-                self.log_message("No cell selected in option chain", "WARNING")
+            # Use tksheet's identify method to get row and column from click coordinates
+            region = self.option_sheet.identify_region(event)
+            
+            # region returns a string like 'table', 'header', 'index', 'top left', or None
+            if region != "table":
+                self.log_message(f"Clicked in {region} area, not a data cell", "INFO")
                 return
             
-            # Extract row and column from selection
-            # selection is typically (row, col, type) or ((row_start, col_start), (row_end, col_end))
-            if isinstance(selection, tuple):
-                if len(selection) >= 2 and isinstance(selection[0], int):
-                    row_idx, col_idx = selection[0], selection[1]
-                elif len(selection) == 2 and isinstance(selection[0], tuple):
-                    # Range selection - use first cell
-                    row_idx, col_idx = selection[0][0], selection[0][1]
-                else:
-                    self.log_message("Invalid selection format", "WARNING")
-                    return
-            else:
-                self.log_message("Unable to parse selection", "WARNING")
+            # Get the row and column that was clicked
+            # Use identify_row and identify_column methods
+            row_idx = self.option_sheet.identify_row(event, exclude_index=True)
+            col_idx = self.option_sheet.identify_column(event, exclude_header=True)
+            
+            if row_idx is None or col_idx is None:
+                self.log_message("Could not identify clicked cell", "WARNING")
                 return
             
             # Get strike from the selected row
