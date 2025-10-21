@@ -1022,7 +1022,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths using column_width method
         # Contract, Qty, Entry, Mid, PnL, PnL%, EntryTime, TimeSpan, Action
-        for col_idx, width in enumerate([180, 50, 80, 80, 100, 80, 100, 90, 70]):
+        for col_idx, width in enumerate([230, 50, 80, 80, 100, 80, 100, 90, 70]):
             self.position_sheet.column_width(column=col_idx, width=width)
         
         # Set column alignments: left for Contract (0), center for all others
@@ -1066,7 +1066,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Set column widths
         self.order_sheet.column_width(column=0, width=80)   # Order ID
-        self.order_sheet.column_width(column=1, width=180)  # Contract (narrower)
+        self.order_sheet.column_width(column=1, width=230)  # Contract (+50px)
         self.order_sheet.column_width(column=2, width=60)   # Action
         self.order_sheet.column_width(column=3, width=50)   # Qty
         self.order_sheet.column_width(column=4, width=80)   # Price
@@ -3841,7 +3841,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.order_sheet.set_sheet_data(current_data)
             
             # Re-apply column widths (only when row count changes)
-            for col_idx, width in enumerate([80, 180, 60, 50, 80, 100, 80]):
+            for col_idx, width in enumerate([80, 230, 60, 50, 80, 100, 80]):
                 self.order_sheet.column_width(column=col_idx, width=width)
             
             # Apply yellow background to Cancel button (column 6)
@@ -3866,7 +3866,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                         # Update sheet (row count changed)
                         self.order_sheet.set_sheet_data(data)
                         # Re-apply column widths (only when row count changes)
-                        for col_idx, width in enumerate([80, 180, 60, 50, 80, 100, 80]):
+                        for col_idx, width in enumerate([80, 230, 60, 50, 80, 100, 80]):
                             self.order_sheet.column_width(column=col_idx, width=width)
                     else:
                         # Update cells individually (preserves column widths)
@@ -3933,7 +3933,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.position_sheet.set_sheet_data(rows)
             
             # Re-apply column widths after set_sheet_data (unavoidable when row count changes)
-            for col_idx, width in enumerate([180, 50, 80, 80, 100, 80, 100, 90, 70]):
+            for col_idx, width in enumerate([230, 50, 80, 80, 100, 80, 100, 90, 70]):
                 self.position_sheet.column_width(column=col_idx, width=width)
             
             # Color-code rows
