@@ -40,6 +40,101 @@ from ibapi.contract import Contract
 from ibapi.order import Order
 from ibapi.common import TickerId, TickAttrib
 from ibapi.ticktype import TickType
+from scipy.stats import norm
+import math
+
+
+# ============================================================================
+# BLACK-SCHOLES GREEKS CALCULATIONS
+# ============================================================================
+
+def calculate_greeks(option_type: str, spot_price: float, strike: float, 
+                     time_to_expiry: float, volatility: float, risk_free_rate: float = 0.05) -> dict:
+    """
+    Calculate option greeks using Black-Scholes model
+    
+    Args:
+        option_type: 'C' for call, 'P' for put
+        spot_price: Current price of underlying (SPX)
+        strike: Strike price of option
+        time_to_expiry: Time to expiration in years (e.g., 0.00274 for 1 day assuming 365 days/year)
+        volatility: Implied volatility as decimal (e.g., 0.20 for 20%)
+        risk_free_rate: Risk-free interest rate as decimal (default 0.05 for 5%)
+    
+    Returns:
+        dict with keys: delta, gamma, theta, vega, iv
+    """
+    try:
+        # Handle edge cases
+        if time_to_expiry <= 0:
+            # At expiration
+            if option_type == 'C':
+                delta = 1.0 if spot_price > strike else 0.0
+            else:
+                delta = -1.0 if spot_price < strike else 0.0
+            return {
+                'delta': delta,
+                'gamma': 0.0,
+                'theta': 0.0,
+                'vega': 0.0,
+                'iv': volatility
+            }
+        
+        if volatility <= 0 or spot_price <= 0 or strike <= 0:
+            return {
+                'delta': 0.0,
+                'gamma': 0.0,
+                'theta': 0.0,
+                'vega': 0.0,
+                'iv': 0.0
+            }
+        
+        # Calculate d1 and d2
+        d1 = (math.log(spot_price / strike) + (risk_free_rate + 0.5 * volatility ** 2) * time_to_expiry) / (volatility * math.sqrt(time_to_expiry))
+        d2 = d1 - volatility * math.sqrt(time_to_expiry)
+        
+        # Standard normal CDF and PDF
+        N_d1 = norm.cdf(d1)
+        N_d2 = norm.cdf(d2)
+        n_d1 = norm.pdf(d1)  # PDF for gamma and vega
+        
+        # Delta
+        if option_type == 'C':
+            delta = N_d1
+        else:  # Put
+            delta = N_d1 - 1.0
+        
+        # Gamma (same for calls and puts)
+        gamma = n_d1 / (spot_price * volatility * math.sqrt(time_to_expiry))
+        
+        # Theta (per day, not per year)
+        if option_type == 'C':
+            theta = (-(spot_price * n_d1 * volatility) / (2 * math.sqrt(time_to_expiry)) 
+                    - risk_free_rate * strike * math.exp(-risk_free_rate * time_to_expiry) * N_d2) / 365
+        else:  # Put
+            theta = (-(spot_price * n_d1 * volatility) / (2 * math.sqrt(time_to_expiry)) 
+                    + risk_free_rate * strike * math.exp(-risk_free_rate * time_to_expiry) * (1 - N_d2)) / 365
+        
+        # Vega (per 1% change in volatility)
+        vega = spot_price * math.sqrt(time_to_expiry) * n_d1 / 100
+        
+        return {
+            'delta': round(delta, 4),
+            'gamma': round(gamma, 4),
+            'theta': round(theta, 4),
+            'vega': round(vega, 4),
+            'iv': round(volatility, 4)
+        }
+        
+    except Exception as e:
+        # Return zeros on any calculation error
+        return {
+            'delta': 0.0,
+            'gamma': 0.0,
+            'theta': 0.0,
+            'vega': 0.0,
+            'iv': 0.0
+        }
 
 
 # ============================================================================
@@ -413,20 +508,23 @@ class IBKRWrapper(EWrapper):
                     "WARNING"
                 )
             
-            # Update the appropriate chart based on contract type
-            # Check if this data is for the currently selected call contract (with expiration)
-            if self.app.selected_call_contract and contract_key == f"SPX_{self.app.selected_call_contract.strike}_C_{self.app.current_expiry}":
+            # Determine if this is a call or put based on contract_key
+            # Format: SPX_6740_C_20251020 or SPX_6745_P_20251020
+            is_call = '_C_' in contract_key
+            is_put = '_P_' in contract_key
+            
+            # Update the appropriate chart and hide loading spinner
+            if is_call and self.app.selected_call_contract:
                 self.app.log_message("Updating call chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_call_chart)
-                    # Hide loading spinner after chart update
+                    # Always hide loading spinner when data arrives
                     self.app.root.after(200, self.app.hide_call_loading)
-            # Check if this data is for the currently selected put contract (with expiration)
-            elif self.app.selected_put_contract and contract_key == f"SPX_{self.app.selected_put_contract.strike}_P_{self.app.current_expiry}":
+            elif is_put and self.app.selected_put_contract:
                 self.app.log_message("Updating put chart with new data", "INFO")
                 if self.app.root:
                     self.app.root.after(100, self.app.update_put_chart)
-                    # Hide loading spinner after chart update
+                    # Always hide loading spinner when data arrives
                     self.app.root.after(200, self.app.hide_put_loading)
         else:
             self.app.log_message(f"Historical data end for unknown reqId: {reqId}", "WARNING")
@@ -2158,6 +2256,58 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 if put_data.get('last', 0) > 0 and put_data.get('prev_close', 0) > 0:
                     put_change_pct = ((put_data['last'] - put_data['prev_close']) / put_data['prev_close']) * 100
                     put_change_str = f"{put_change_pct:+.2f}%"  # Show sign (+/-)
+                
+                # Self-compute greeks using Mid price if greeks are missing
+                # Calculate time to expiry
+                try:
+                    expiry_str = self.current_expiry  # Format: YYYYMMDD
+                    expiry_date = datetime.strptime(expiry_str, "%Y%m%d")
+                    now = datetime.now()
+                    # Calculate time to expiry in years
+                    time_to_expiry = (expiry_date - now).total_seconds() / (365.25 * 24 * 3600)
+                    time_to_expiry = max(0.0001, time_to_expiry)  # Minimum 1 hour to avoid division by zero
+                except:
+                    time_to_expiry = 0.00274  # Default to 1 day if parsing fails
+                
+                # Compute call greeks if missing and we have bid/ask
+                if call_data and (not call_data.get('delta') or call_data.get('delta') == 0):
+                    call_bid = call_data.get('bid', 0)
+                    call_ask = call_data.get('ask', 0)
+                    if call_bid > 0 and call_ask > 0 and self.spx_price > 0:
+                        call_mid = (call_bid + call_ask) / 2.0
+                        # Estimate IV from option price (simplified - use 20% if no better estimate)
+                        estimated_iv = call_data.get('iv', 0.20)
+                        if estimated_iv == 0:
+                            estimated_iv = 0.20
+                        
+                        # Calculate greeks
+                        greeks = calculate_greeks('C', self.spx_price, strike, time_to_expiry, estimated_iv)
+                        call_data['delta'] = greeks['delta']
+                        call_data['gamma'] = greeks['gamma']
+                        call_data['theta'] = greeks['theta']
+                        call_data['vega'] = greeks['vega']
+                        if call_data.get('iv', 0) == 0:
+                            call_data['iv'] = greeks['iv']
+                
+                # Compute put greeks if missing and we have bid/ask
+                if put_data and (not put_data.get('delta') or put_data.get('delta') == 0):
+                    put_bid = put_data.get('bid', 0)
+                    put_ask = put_data.get('ask', 0)
+                    if put_bid > 0 and put_ask > 0 and self.spx_price > 0:
+                        put_mid = (put_bid + put_ask) / 2.0
+                        # Estimate IV from option price (simplified - use 20% if no better estimate)
+                        estimated_iv = put_data.get('iv', 0.20)
+                        if estimated_iv == 0:
+                            estimated_iv = 0.20
+                        
+                        # Calculate greeks
+                        greeks = calculate_greeks('P', self.spx_price, strike, time_to_expiry, estimated_iv)
+                        put_data['delta'] = greeks['delta']
+                        put_data['gamma'] = greeks['gamma']
+                        put_data['theta'] = greeks['theta']
+                        put_data['vega'] = greeks['vega']
+                        if put_data.get('iv', 0) == 0:
+                            put_data['iv'] = greeks['iv']
                 
                 # Build row values
                 # Call columns (0-9): Bid, Ask, Last, CHANGE%, Volume, Gamma, Vega, Theta, Delta, IV
