@@ -239,16 +239,23 @@ class IBKRWrapper(EWrapper):
                              delta: float, optPrice: float, pvDividend: float,
                              gamma: float, vega: float, theta: float,
                              undPrice: float):
-        """Receives option greeks"""
+        """
+        Receives option greeks.
+        Tick Type 13 (MODEL_OPTION) = Model-based greeks that work without Last price.
+        This uses bid/ask mid-price for calculations when Last is unavailable.
+        """
         if reqId in self.app.market_data_map:
             contract_key = self.app.market_data_map[reqId]
             
+            # Accept greeks from any tick type, but prioritize MODEL (13)
+            # Tick type 13 = MODEL_OPTION (always calculated even without Last)
+            # Tick types 10, 11, 12 = BID, ASK, LAST based greeks
             self.app.market_data[contract_key].update({
-                'delta': delta if delta != -2 else 0,
-                'gamma': gamma if gamma != -2 else 0,
-                'theta': theta if theta != -2 else 0,
-                'vega': vega if vega != -2 else 0,
-                'iv': impliedVol if impliedVol != -2 else 0  # Changed from 'impliedVol' to 'iv'
+                'delta': delta if delta != -2 and delta != -1 else 0,
+                'gamma': gamma if gamma != -2 and gamma != -1 else 0,
+                'theta': theta if theta != -2 and theta != -1 else 0,
+                'vega': vega if vega != -2 and vega != -1 else 0,
+                'iv': impliedVol if impliedVol != -2 and impliedVol != -1 else 0
             })
     
     def orderStatus(self, orderId: int, status: str, filled: float,
@@ -797,7 +804,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Disable editing (read-only display)
             edit_cell_validation=False,
             # Enable selections for click detection
-            enable_bindings=("single_select", "row_select")
+            enable_bindings=("single_select", "row_select"),
+            show_row_index=False  # Hide row index column
         )
         
         # Configure TWS color scheme
@@ -811,9 +819,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             table_selected_cells_fg="#ffffff",
             header_bg=TWS_COLORS['header_bg'],
             header_fg=TWS_COLORS['header_fg'],
-            header_grid_fg=TWS_COLORS['grid_line'],
-            show_index=False,  # Hide row index numbers
-            show_row_index=False  # Hide row header column completely
+            header_grid_fg=TWS_COLORS['grid_line']
         )
         
         # Set column widths and alignment
@@ -2171,28 +2177,32 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 for col_idx, val in enumerate(call_values):
                     cell_updates.append((row_idx, col_idx, val))
                     
-                    # CHANGE % column gets green/red background
+                    # CHANGE % column gets green/red background with WHITE text
                     if col_idx == 3:  # CHANGE % column
                         if call_change_pct > 0:
                             cell_bg = self.tws_colors['positive_bg']  # Green background
-                            fg_color = self.tws_colors['positive']  # Green text
+                            fg_color = self.tws_colors['fg']  # WHITE text
                         elif call_change_pct < 0:
                             cell_bg = self.tws_colors['negative_bg']  # Red background
-                            fg_color = self.tws_colors['negative']  # Red text
+                            fg_color = self.tws_colors['fg']  # WHITE text
                         else:
                             cell_bg = self.tws_colors['bg']  # Black
                             fg_color = self.tws_colors['fg']  # White
                         cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
-                    # All other cells: pure black background
-                    elif col_idx in [5, 6, 7, 8]:  # Gamma, Vega, Theta, Delta - colored text
-                        fg_color = get_value_color(call_data.get(greek_keys_call[col_idx]))
-                        cell_formats.append((row_idx, col_idx, fg_color, self.tws_colors['bg']))
+                    # All other cells: pure black background with WHITE text (no coloring for greeks)
                     else:
                         cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], self.tws_colors['bg']))
                 
-                # Strike column (bold, centered, blue background like IB)
+                # Strike column: Dynamic coloring based on ATM position
+                # Strikes above SPX = current blue (#2a4a6a)
+                # Strikes below SPX = darker blue (#1a2a3a)
+                if strike >= self.spx_price:
+                    strike_bg = self.tws_colors['strike_bg']  # Above ATM: current blue
+                else:
+                    strike_bg = '#1a2a3a'  # Below ATM: darker blue
+                
                 cell_updates.append((row_idx, 10, strike_value))
-                cell_formats.append((row_idx, 10, self.tws_colors['strike_fg'], self.tws_colors['strike_bg']))
+                cell_formats.append((row_idx, 10, self.tws_colors['strike_fg'], strike_bg))
                 
                 # Put columns mapping: 0=iv, 1=delta, 2=theta, 3=vega, 4=gamma, 5=volume, 6=change%, 7=last, 8=ask, 9=bid
                 greek_keys_put = ['iv', 'delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
@@ -2201,22 +2211,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                     col_idx = 11 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
                     
-                    # CHANGE % column gets green/red background
-                    if col_offset == 6:  # CHANGE % column (moved from 5 to 6)
+                    # CHANGE % column gets green/red background with WHITE text
+                    if col_offset == 6:  # CHANGE % column
                         if put_change_pct > 0:
                             cell_bg = self.tws_colors['positive_bg']  # Green background
-                            fg_color = self.tws_colors['positive']  # Green text
+                            fg_color = self.tws_colors['fg']  # WHITE text
                         elif put_change_pct < 0:
                             cell_bg = self.tws_colors['negative_bg']  # Red background
-                            fg_color = self.tws_colors['negative']  # Red text
+                            fg_color = self.tws_colors['fg']  # WHITE text
                         else:
                             cell_bg = self.tws_colors['bg']  # Black
                             fg_color = self.tws_colors['fg']  # White
                         cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
-                    # All other cells: pure black background
-                    elif col_offset in [1, 2, 3, 4]:  # Delta, Theta, Vega, Gamma - colored text
-                        fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
-                        cell_formats.append((row_idx, col_idx, fg_color, self.tws_colors['bg']))
+                    # All other cells: pure black background with WHITE text (no coloring for greeks)
                     else:
                         cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], self.tws_colors['bg']))
             
