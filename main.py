@@ -737,22 +737,34 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         chain_frame = ttk.Frame(tab)
         chain_frame.pack(fill=BOTH, expand=False, padx=5, pady=5)
         
-        # IBKR TWS Color Scheme from Screenshot
+        # IBKR TWS Color Scheme from Screenshot Analysis
+        # Based on actual IB TWS interface with blue transparency for ITM options
         TWS_COLORS = {
-            'bg': '#000000',           # Pure black background
-            'fg': '#b0b0b0',           # Neutral text
-            'header_bg': '#1a1a1a',    # Dark header background
-            'header_fg': '#e0e0e0',    # Light header text
-            'grid_line': '#2a2a2a',    # Subtle grid lines
-            'selected': '#1a2a3a',     # Selection highlight
-            'call_itm_deep': '#002a00', # Deep ITM call background
-            'call_itm': '#001a00',      # ITM call background
-            'put_itm_deep': '#2a0000',  # Deep ITM put background
-            'put_itm': '#1a0000',       # ITM put background
-            'otm_fg': '#808080',        # OTM dimmed text
-            'strike_bg': '#0a0a0a',     # Strike column background
-            'positive': '#00ff00',      # Positive values (green)
-            'negative': '#ff0000'       # Negative values (red)
+            'bg': '#000000',              # Pure black background
+            'fg': '#ffffff',              # White text (brighter than before)
+            'header_bg': '#1a3a5a',       # Blue-gray header (like IB)
+            'header_fg': '#ffffff',       # White header text
+            'grid_line': '#2a2a2a',       # Subtle grid lines
+            'selected': '#3a5a7a',        # Blue selection highlight
+            
+            # ITM backgrounds - Blue transparency like IB TWS
+            'call_itm_deep': '#1a2a4a',   # Deep blue for deep ITM calls
+            'call_itm': '#0f1a2a',        # Lighter blue for ITM calls
+            'put_itm_deep': '#1a2a4a',    # Deep blue for deep ITM puts (same as calls in IB)
+            'put_itm': '#0f1a2a',         # Lighter blue for ITM puts
+            
+            'otm_fg': '#808080',          # OTM dimmed text
+            'strike_bg': '#2a4a6a',       # Blue background for strike column (like IB)
+            'strike_fg': '#ffffff',       # White text for strike
+            
+            # Value colors
+            'positive': '#00ff00',        # Bright green for positive values
+            'negative': '#ff0000',        # Bright red for negative values
+            'neutral': '#c0c0c0',         # Light gray for neutral
+            
+            # Special column backgrounds (like IB's colored columns)
+            'delta_bg': '#1a1a2a',        # Slight blue tint for delta columns
+            'volume_bg': '#1a1a1a'        # Slight gray for volume
         }
         
         # Column headers matching IBKR layout
@@ -799,15 +811,19 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             show_index=False  # Hide row numbers for cleaner look
         )
         
-        # Set column widths (matching old Treeview layout)
+        # Set column widths and alignment
         col_width = 70
         strike_width = 100
         
         for i, header in enumerate(headers):
             if header == "● STRIKE ●":
                 self.option_sheet.column_width(column=i, width=strike_width)
+                # Strike column - center aligned
+                self.option_sheet.align_columns(columns=i, align="center")
             else:
                 self.option_sheet.column_width(column=i, width=col_width)
+                # All other columns - center aligned
+                self.option_sheet.align_columns(columns=i, align="center")
         
         # Pack sheet
         self.option_sheet.pack(fill=BOTH, expand=YES, padx=0, pady=0)
@@ -1932,7 +1948,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 }
                 
                 self.subscribed_contracts.append(('C', strike, strike_data['call_contract']))
-                self.reqMktData(req_id, strike_data['call_contract'], "", False, False, [])
+                # Request market data with model-based greeks (tag 106)
+                # This calculates greeks even without last price, using bid/ask mid
+                self.reqMktData(req_id, strike_data['call_contract'], "106", False, False, [])
             
             # Subscribe to put
             if strike_data['put']:
@@ -1952,7 +1970,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 }
                 
                 self.subscribed_contracts.append(('P', strike, strike_data['put_contract']))
-                self.reqMktData(req_id, strike_data['put_contract'], "", False, False, [])
+                # Request market data with model-based greeks (tag 106)
+                # This calculates greeks even without last price, using bid/ask mid
+                self.reqMktData(req_id, strike_data['put_contract'], "106", False, False, [])
             
             # Create sheet row with call on left, strike in center, put on right
             # Format: C_Bid, C_Ask, C_Last, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_Last, P_Ask, P_Bid
@@ -2128,16 +2148,24 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 
                 for col_idx, val in enumerate(call_values):
                     cell_updates.append((row_idx, col_idx, val))
+                    
+                    # Determine background color for special columns
+                    cell_bg = row_bg
+                    if col_idx == 7:  # Delta column - slight blue tint
+                        cell_bg = self.tws_colors.get('delta_bg', row_bg)
+                    elif col_idx == 3:  # Volume column - slight gray tint
+                        cell_bg = self.tws_colors.get('volume_bg', row_bg)
+                    
                     # Apply colors: positive/negative for greeks, default otherwise
                     if col_idx in [4, 5, 6, 7]:  # Gamma, Vega, Theta, Delta
                         fg_color = get_value_color(call_data.get(greek_keys_call[col_idx]))
-                        cell_formats.append((row_idx, col_idx, fg_color, row_bg))
+                        cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
                     else:
-                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], cell_bg))
                 
-                # Strike column (bold, centered)
+                # Strike column (bold, centered, blue background like IB)
                 cell_updates.append((row_idx, 9, strike_value))
-                cell_formats.append((row_idx, 9, self.tws_colors['header_fg'], self.tws_colors['strike_bg']))
+                cell_formats.append((row_idx, 9, self.tws_colors['strike_fg'], self.tws_colors['strike_bg']))
                 
                 # Put columns mapping: 0=delta, 1=theta, 2=vega, 3=gamma, 4=volume, 5=last, 6=ask, 7=bid
                 greek_keys_put = ['delta', 'theta', 'vega', 'gamma', 'volume', 'last', 'ask', 'bid']
@@ -2145,12 +2173,20 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 for col_offset, val in enumerate(put_values):
                     col_idx = 10 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
+                    
+                    # Determine background color for special columns
+                    cell_bg = row_bg
+                    if col_offset == 0:  # Delta column - slight blue tint
+                        cell_bg = self.tws_colors.get('delta_bg', row_bg)
+                    elif col_offset == 4:  # Volume column - slight gray tint
+                        cell_bg = self.tws_colors.get('volume_bg', row_bg)
+                    
                     # Apply colors: positive/negative for greeks, default otherwise
                     if col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma
                         fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
-                        cell_formats.append((row_idx, col_idx, fg_color, row_bg))
+                        cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
                     else:
-                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], row_bg))
+                        cell_formats.append((row_idx, col_idx, self.tws_colors['fg'], cell_bg))
             
             # Apply all cell updates in batch
             for row, col, value in cell_updates:
