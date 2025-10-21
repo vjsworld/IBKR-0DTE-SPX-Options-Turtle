@@ -777,14 +777,14 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Column headers matching IBKR layout with CHANGE % column
         # CALLS: Bid, Ask, Last, CHANGE %, Volume, Gamma, Vega, Theta, Delta, Imp Vol
         # STRIKE (center)
-        # PUTS: Delta, Theta, Vega, Gamma, Volume, CHANGE %, Last, Ask, Bid
+        # PUTS: Imp Vol, Delta, Theta, Vega, Gamma, Volume, CHANGE %, Last, Ask, Bid
         headers = [
-            # Call side (left) - 10 columns (added CHANGE %)
+            # Call side (left) - 10 columns
             "Bid", "Ask", "Last", "CHANGE %", "Volume", "Gamma", "Vega", "Theta", "Delta", "Imp Vol",
             # Strike (center) - 1 column
             "● STRIKE ●",
-            # Put side (right) - 9 columns (added CHANGE %)
-            "Delta", "Theta", "Vega", "Gamma", "Volume", "CHANGE %", "Last", "Ask", "Bid"
+            # Put side (right) - 10 columns (added Imp Vol to match calls)
+            "Imp Vol", "Delta", "Theta", "Vega", "Gamma", "Volume", "CHANGE %", "Last", "Ask", "Bid"
         ]
         
         # Create tksheet with professional configuration
@@ -812,10 +812,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             header_bg=TWS_COLORS['header_bg'],
             header_fg=TWS_COLORS['header_fg'],
             header_grid_fg=TWS_COLORS['grid_line'],
-            index_bg=TWS_COLORS['bg'],
-            index_fg=TWS_COLORS['fg'],
-            top_left_bg=TWS_COLORS['bg'],
-            show_index=False  # Hide row numbers for cleaner look
+            show_index=False,  # Hide row index numbers
+            show_row_index=False  # Hide row header column completely
         )
         
         # Set column widths and alignment
@@ -841,13 +839,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Store TWS colors for later use in cell formatting
         self.tws_colors = TWS_COLORS
         
-        # Store column indices for easy reference (updated with CHANGE % column)
+        # Store column indices for easy reference (updated with CHANGE % and Imp Vol symmetry)
         self.sheet_cols = {
             'c_bid': 0, 'c_ask': 1, 'c_last': 2, 'c_change': 3, 'c_vol': 4,
             'c_gamma': 5, 'c_vega': 6, 'c_theta': 7, 'c_delta': 8, 'c_iv': 9,
             'strike': 10,
-            'p_delta': 11, 'p_theta': 12, 'p_vega': 13, 'p_gamma': 14,
-            'p_vol': 15, 'p_change': 16, 'p_last': 17, 'p_ask': 18, 'p_bid': 19
+            'p_iv': 11, 'p_delta': 12, 'p_theta': 13, 'p_vega': 14, 'p_gamma': 15,
+            'p_vol': 16, 'p_change': 17, 'p_last': 18, 'p_ask': 19, 'p_bid': 20
         }
         
         # Bottom panel: Positions/Orders side-by-side, then Charts, then Log
@@ -1621,7 +1619,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def update_spx_price_display(self):
         """Update the SPX price display in the GUI"""
         if self.spx_price > 0:
-            self.spx_price_label.config(text=f"SPX: ${self.spx_price:.2f}")
+            self.spx_price_label.config(text=f"SPX: {self.spx_price:.2f}")
     
     # ========================================================================
     # OPTION CHAIN MANAGEMENT
@@ -1982,11 +1980,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.reqMktData(req_id, strike_data['put_contract'], "106", False, False, [])
             
             # Create sheet row with call on left, strike in center, put on right
-            # Format: C_Bid, C_Ask, C_Last, C_CHANGE%, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_CHANGE%, P_Last, P_Ask, P_Bid
+            # Format: C_Bid, C_Ask, C_Last, C_CHANGE%, C_Vol, C_Gamma, C_Vega, C_Theta, C_Delta, C_IV, Strike, P_IV, P_Delta, P_Theta, P_Vega, P_Gamma, P_Vol, P_CHANGE%, P_Last, P_Ask, P_Bid
             row_data = [
                 "0.00", "0.00", "0.00", "0.00%", "0", "0.00", "0.00", "0.00", "0.00", "0.00",  # Call data (10 columns)
                 f"{strike:.2f}",  # Strike (1 column)
-                "0.00", "0.00", "0.00", "0.00", "0", "0.00%", "0.00", "0.00", "0.00"  # Put data (9 columns)
+                "0.00", "0.00", "0.00", "0.00", "0.00", "0", "0.00%", "0.00", "0.00", "0.00"  # Put data (10 columns - added IV)
             ]
             
             sheet_data.append(row_data)
@@ -2152,14 +2150,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 # Strike column (10)
                 strike_value = f"{strike:.2f}"
                 
-                # Put columns (11-19): Delta, Theta, Vega, Gamma, Volume, CHANGE%, Last, Ask, Bid
+                # Put columns (11-20): IV, Delta, Theta, Vega, Gamma, Volume, CHANGE%, Last, Ask, Bid
                 put_values = [
+                    safe_format(put_data.get('iv'), ".2f"),
                     safe_format(put_data.get('delta'), ".4f"),
                     safe_format(put_data.get('theta'), ".4f"),
                     safe_format(put_data.get('vega'), ".4f"),
                     safe_format(put_data.get('gamma'), ".4f"),
                     safe_format(put_data.get('volume'), "int"),
-                    put_change_str,  # CHANGE % at index 5
+                    put_change_str,  # CHANGE % at index 6
                     safe_format(put_data.get('last'), ".2f"),
                     safe_format(put_data.get('ask'), ".2f"),
                     safe_format(put_data.get('bid'), ".2f")
@@ -2195,15 +2194,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 cell_updates.append((row_idx, 10, strike_value))
                 cell_formats.append((row_idx, 10, self.tws_colors['strike_fg'], self.tws_colors['strike_bg']))
                 
-                # Put columns mapping: 0=delta, 1=theta, 2=vega, 3=gamma, 4=volume, 5=change%, 6=last, 7=ask, 8=bid
-                greek_keys_put = ['delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
+                # Put columns mapping: 0=iv, 1=delta, 2=theta, 3=vega, 4=gamma, 5=volume, 6=change%, 7=last, 8=ask, 9=bid
+                greek_keys_put = ['iv', 'delta', 'theta', 'vega', 'gamma', 'volume', 'change%', 'last', 'ask', 'bid']
                 
                 for col_offset, val in enumerate(put_values):
                     col_idx = 11 + col_offset
                     cell_updates.append((row_idx, col_idx, val))
                     
                     # CHANGE % column gets green/red background
-                    if col_offset == 5:  # CHANGE % column
+                    if col_offset == 6:  # CHANGE % column (moved from 5 to 6)
                         if put_change_pct > 0:
                             cell_bg = self.tws_colors['positive_bg']  # Green background
                             fg_color = self.tws_colors['positive']  # Green text
@@ -2215,7 +2214,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                             fg_color = self.tws_colors['fg']  # White
                         cell_formats.append((row_idx, col_idx, fg_color, cell_bg))
                     # All other cells: pure black background
-                    elif col_offset in [0, 1, 2, 3]:  # Delta, Theta, Vega, Gamma - colored text
+                    elif col_offset in [1, 2, 3, 4]:  # Delta, Theta, Vega, Gamma - colored text
                         fg_color = get_value_color(put_data.get(greek_keys_put[col_offset]))
                         cell_formats.append((row_idx, col_idx, fg_color, self.tws_colors['bg']))
                     else:
