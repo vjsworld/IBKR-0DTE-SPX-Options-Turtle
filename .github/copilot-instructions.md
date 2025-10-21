@@ -3,6 +3,46 @@
 ## Project Overview
 Bloomberg-style GUI application for automated 0DTE (Zero Days To Expiration) SPX options trading via Interactive Brokers API. Single-file Python architecture with multi-threaded design for non-blocking GUI + real-time market data streaming.
 
+## Python Environment (CRITICAL!)
+
+### Virtual Environment: `.venv`
+**⚠️ ALWAYS use the virtual environment - NEVER install to root Python!**
+
+- **Location**: `.venv/` folder in project root
+- **Python Version**: 3.11
+- **Activation**: 
+  ```powershell
+  .\.venv\Scripts\Activate.ps1
+  ```
+- **Installing packages**: 
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install <package>
+  # OR (if venv activated)
+  pip install <package>
+  ```
+
+### Dependency Management Rules
+1. **ALWAYS install to `.venv`**, not global Python
+2. **Update `requirements.txt`** after adding new dependencies
+3. **Test imports** in venv before committing:
+   ```powershell
+   .\.venv\Scripts\python.exe -c "import <module>; print('✓ Import successful')"
+   ```
+4. **VS Code Python interpreter** should point to `.venv\Scripts\python.exe`
+
+### Current Dependencies
+- `ibapi>=9.81.1`: Interactive Brokers API
+- `ttkbootstrap>=1.10.1`: Modern tkinter theming
+- `tksheet>=7.2.0`: Excel-like grid for option chain
+- `pandas>=2.0.0`, `numpy>=1.24.0`: Data processing
+- `scipy>=1.11.0`: Black-Scholes greeks calculations
+- `matplotlib>=3.7.0`: Chart rendering
+
+**Install all dependencies**: 
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
 ## Core Architecture
 
 ### Single-File Design Pattern
@@ -145,10 +185,29 @@ C_Bid | C_Ask | C_Last | ... | STRIKE | ... | P_Last | P_Ask | P_Bid
 ## Development Workflows
 
 ### Running the Application
+**ALWAYS use the virtual environment:**
 ```powershell
+# Option 1: Direct execution with venv python
+.\.venv\Scripts\python.exe main.py
+
+# Option 2: Activate venv first, then run
+.\.venv\Scripts\Activate.ps1
 python main.py
 ```
 No build step - direct execution. Requires TWS/IB Gateway running and configured.
+
+### Installing New Dependencies
+**CRITICAL: Never use global Python - always use `.venv`!**
+```powershell
+# Install package in venv
+.\.venv\Scripts\python.exe -m pip install <package>
+
+# Update requirements.txt
+.\.venv\Scripts\python.exe -m pip freeze > requirements.txt
+
+# Verify installation
+.\.venv\Scripts\python.exe -c "import <module>; print('✓ Installed in venv')"
+```
 
 ### Testing Requirements
 1. **IBKR Setup**: TWS or IB Gateway must be running on specified port
@@ -223,13 +282,39 @@ self.gui_queue.put(("update_position", contract_key, data))
 # Then process in main thread via root.after() polling
 ```
 
-## Dependencies
-- `ibapi>=9.81.1`: Interactive Brokers API
-- `ttkbootstrap>=1.10.1`: Modern tkinter theming
-- `pandas>=2.0.0`, `numpy>=1.24.0`: Data processing
-- `matplotlib>=3.7.0`: Chart rendering
+## Virtual Environment Setup (IMPORTANT!)
 
-Install via: `pip install -r requirements.txt`
+### First-Time Setup
+If cloning the repository for the first time:
+```powershell
+# Create virtual environment
+python -m venv .venv
+
+# Activate it
+.\.venv\Scripts\Activate.ps1
+
+# Install all dependencies
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### Troubleshooting Import Errors
+If VS Code shows import errors (red squiggles):
+1. **Check Python interpreter**: Press `Ctrl+Shift+P` → "Python: Select Interpreter" → Choose `.venv\Scripts\python.exe`
+2. **Verify package installed in venv**:
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip list
+   ```
+3. **Reinstall if missing**:
+   ```powershell
+   .\.venv\Scripts\python.exe -m pip install <package>
+   ```
+4. **Restart language server**: Press `Ctrl+Shift+P` → "Python: Restart Language Server"
+
+### Common Mistakes to Avoid
+- ❌ **DON'T**: Run `pip install <package>` without activating venv (installs to global Python)
+- ❌ **DON'T**: Use `python` command directly (might use wrong interpreter)
+- ✅ **DO**: Always use `.\.venv\Scripts\python.exe -m pip install <package>`
+- ✅ **DO**: Verify installation location with `pip show <package>`
 
 ## Critical Constraints
 - **Windows-primary**: Paths and shell commands assume Windows (PowerShell)
