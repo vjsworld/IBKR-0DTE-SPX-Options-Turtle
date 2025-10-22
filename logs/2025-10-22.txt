@@ -1,0 +1,648 @@
+[2025-10-22 10:16:17] [INFO] ================================================================================
+[2025-10-22 10:16:17] [INFO] SPX 0DTE Options Trading Application - Session Started
+[2025-10-22 10:16:17] [INFO] ================================================================================
+[2025-10-22 10:16:18] [INFO] Chart tab created - ready for data
+[2025-10-22 10:16:18] [INFO] Auto-connect enabled - connecting to IBKR in 2 seconds...
+[2025-10-22 10:16:18] [INFO] ✓ Settings loaded successfully
+[2025-10-22 10:16:19] [WARNING] Could not determine strike for row 0
+[2025-10-22 10:16:20] [INFO] Initiating connection to IBKR at 127.0.0.1:7497 (Client ID: 1)
+[2025-10-22 10:16:20] [INFO] API thread started, establishing socket connection...
+[2025-10-22 10:16:20] [INFO] Connecting to socket 127.0.0.1:7497...
+[2025-10-22 10:16:20] [INFO] Connection acknowledged
+[2025-10-22 10:16:20] [INFO] Socket connected, waiting for nextValidId confirmation...
+[2025-10-22 10:16:20] [INFO] ✓ Successfully connected to IBKR with Client ID 1! Next Order ID: 10
+[2025-10-22 10:16:20] [INFO] ✓ Connection established successfully!
+[2025-10-22 10:16:20] [INFO] Requesting account updates...
+[2025-10-22 10:16:20] [INFO] Requesting position updates...
+[2025-10-22 10:16:20] [INFO] Subscribing to SPX underlying price...
+[2025-10-22 10:16:20] [INFO] Subscribed to SPX underlying price (reqId: 1000)
+[2025-10-22 10:16:20] [INFO] Subscribed to VIX (reqId: 999998)
+[2025-10-22 10:16:20] [INFO] Requested SPX 1-min history for Z-Score (reqId: 999997)
+[2025-10-22 10:16:20] [INFO] Requesting SPX option chain for 0DTE...
+[2025-10-22 10:16:20] [INFO] Building option chain using manual strike calculation...
+[2025-10-22 10:16:20] [INFO] Building option chain from SPX price and strike settings...
+[2025-10-22 10:16:20] [INFO] Waiting for SPX price before creating manual chain...
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Managed accounts: DU5330979
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Using account (LAST in list): DU5330979
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ ✓ Data server connection confirmed - ready for trading
+[2025-10-22 10:16:20] [INFO] ✓ Security definition server OK
+[2025-10-22 10:16:20] [INFO] Position update: SPX_6765_C_20251022 - Qty: 1.0 @ $3.62
+[2025-10-22 10:16:20] [INFO] Subscribing to market data for position: SPX_6765_C_20251022
+[2025-10-22 10:16:20] [INFO] Created market_data entry for SPX_6765_C_20251022
+[2025-10-22 10:16:20] [INFO] Requested market data (reqId=1001) for SPX_6765_C_20251022
+[2025-10-22 10:16:20] [INFO] Position update: SPX_6775_C_20251022 - Qty: 1.0 @ $4.02
+[2025-10-22 10:16:20] [INFO] Subscribing to market data for position: SPX_6775_C_20251022
+[2025-10-22 10:16:20] [INFO] Created market_data entry for SPX_6775_C_20251022
+[2025-10-22 10:16:20] [INFO] Requested market data (reqId=1002) for SPX_6775_C_20251022
+[2025-10-22 10:16:20] [INFO] Position update: SPX_6760_C_20251022 - Qty: 1.0 @ $4.82
+[2025-10-22 10:16:20] [INFO] Subscribing to market data for position: SPX_6760_C_20251022
+[2025-10-22 10:16:20] [INFO] Created market_data entry for SPX_6760_C_20251022
+[2025-10-22 10:16:20] [INFO] Requested market data (reqId=1003) for SPX_6760_C_20251022
+[2025-10-22 10:16:20] [INFO] Position subscription complete - 3 position(s)
+[2025-10-22 10:16:20] [INFO] ✓ SPX 1-min history received (107 bars) for Z-Score
+[2025-10-22 10:16:22] [INFO] Building option chain from SPX price and strike settings...
+[2025-10-22 10:16:22] [INFO] Creating option chain around SPX price: $6718.94
+[2025-10-22 10:16:22] [INFO] Created 41 strikes from $6620.00 to $6820.00 (center: $6720.00, 20 below, 20 above)
+[2025-10-22 10:16:22] [INFO] Creating contracts with expiration: 20251022
+[2025-10-22 10:16:22] [INFO] ✓ Created 82 option contracts (41 calls + 41 puts)
+[2025-10-22 10:16:22] [INFO] Subscribing to real-time market data for 82 contracts...
+[2025-10-22 10:16:22] [INFO] ✓ Successfully subscribed to 82 contracts (41 strikes)
+[2025-10-22 10:16:22] [INFO] Automatic chain refresh scheduled every 3600 seconds
+[2025-10-22 10:16:35] [INFO] Requested 1 D 1 min SPX chart data (reqId: 999996)
+[2025-10-22 10:16:35] [INFO] ✓ Chart historical data received (107 bars)
+[2025-10-22 10:16:35] [INFO] ✓ Chart updated with 107 bars
+[2025-10-22 10:16:42] [INFO] Requested 1 D 1 min SPX chart data (reqId: 999996)
+[2025-10-22 10:16:42] [INFO] ✓ Chart historical data received (107 bars)
+[2025-10-22 10:16:42] [INFO] ✓ Chart updated with 107 bars
+[2025-10-22 10:16:52] [INFO] Clicked: row=3, column=8, strike=6635
+[2025-10-22 10:16:52] [INFO] Looking for call contract at strike 6635, found: SPX_6635_C_20251022
+[2025-10-22 10:16:52] [INFO] ✓ ✓ Selected CALL: Strike 6635 (Expiry: 20251022) - Requesting chart data...
+[2025-10-22 10:16:52] [INFO] Requesting 2D historical data for SPX_6635_C_20251022...
+[2025-10-22 10:16:52] [INFO] Historical data request sent (reqId: 1086)
+[2025-10-22 10:16:52] [INFO] Receiving historical data for SPX_6635_C_20251022 (reqId: 1086)
+[2025-10-22 10:16:52] [INFO] ✓ Historical data complete for SPX_6635_C_20251022 - 428 bars (20251020  10:16:52 to 20251022  10:16:52)
+[2025-10-22 10:16:52] [INFO] Updating call chart with new data
+[2025-10-22 10:18:12] [INFO] ============================================================
+[2025-10-22 10:18:12] [INFO] ✓ MANUAL CLOSE POSITION: SPX_6765_C_20251022
+[2025-10-22 10:18:12] [INFO] Exit order: SELL 1 @ $0.30
+[2025-10-22 10:18:12] [INFO] Contract: SPX 6765.0 C 20251022
+[2025-10-22 10:18:12] [INFO] ✓ Contract validation passed - all required fields present
+[2025-10-22 10:18:12] [INFO] === PLACING ORDER #10 ===
+[2025-10-22 10:18:12] [INFO] Contract: SPX 6765.0C 20251022
+[2025-10-22 10:18:12] [INFO] Order: SELL 1 LMT @ $0.30
+[2025-10-22 10:18:12] [INFO] TradingClass: SPXW
+[2025-10-22 10:18:12] [INFO] Exchange: SMART
+[2025-10-22 10:18:12] [INFO] Account: DU5330979
+[2025-10-22 10:18:12] [INFO] Mid-Price Chasing: ENABLED
+[2025-10-22 10:18:12] [INFO] -------------------- CONTRACT DETAILS --------------------
+[2025-10-22 10:18:12] [INFO]   - conId: 819715700
+[2025-10-22 10:18:12] [INFO]   - symbol: SPX
+[2025-10-22 10:18:12] [INFO]   - secType: OPT
+[2025-10-22 10:18:12] [INFO]   - lastTradeDateOrContractMonth: 20251022
+[2025-10-22 10:18:12] [INFO]   - strike: 6765.0
+[2025-10-22 10:18:12] [INFO]   - right: C
+[2025-10-22 10:18:12] [INFO]   - multiplier: 100
+[2025-10-22 10:18:12] [INFO]   - exchange: SMART
+[2025-10-22 10:18:12] [INFO]   - currency: USD
+[2025-10-22 10:18:12] [INFO]   - localSymbol: SPXW  251022C06765000
+[2025-10-22 10:18:12] [INFO]   - tradingClass: SPXW
+[2025-10-22 10:18:12] [INFO] -------------------- ORDER DETAILS --------------------
+[2025-10-22 10:18:12] [INFO]   - softDollarTier: Name: , Value: , DisplayName: 
+[2025-10-22 10:18:12] [INFO]   - orderId: 0
+[2025-10-22 10:18:12] [INFO]   - clientId: 0
+[2025-10-22 10:18:12] [INFO]   - permId: 0
+[2025-10-22 10:18:12] [INFO]   - action: SELL
+[2025-10-22 10:18:12] [INFO]   - totalQuantity: 1
+[2025-10-22 10:18:12] [INFO]   - orderType: LMT
+[2025-10-22 10:18:12] [INFO]   - lmtPrice: 0.30000000000000004
+[2025-10-22 10:18:12] [INFO]   - auxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - tif: DAY
+[2025-10-22 10:18:12] [INFO]   - activeStartTime: 
+[2025-10-22 10:18:12] [INFO]   - activeStopTime: 
+[2025-10-22 10:18:12] [INFO]   - ocaGroup: 
+[2025-10-22 10:18:12] [INFO]   - ocaType: 0
+[2025-10-22 10:18:12] [INFO]   - orderRef: 
+[2025-10-22 10:18:12] [INFO]   - transmit: True
+[2025-10-22 10:18:12] [INFO]   - parentId: 0
+[2025-10-22 10:18:12] [INFO]   - blockOrder: False
+[2025-10-22 10:18:12] [INFO]   - sweepToFill: False
+[2025-10-22 10:18:12] [INFO]   - displaySize: 0
+[2025-10-22 10:18:12] [INFO]   - triggerMethod: 0
+[2025-10-22 10:18:12] [INFO]   - outsideRth: False
+[2025-10-22 10:18:12] [INFO]   - hidden: False
+[2025-10-22 10:18:12] [INFO]   - goodAfterTime: 
+[2025-10-22 10:18:12] [INFO]   - goodTillDate: 
+[2025-10-22 10:18:12] [INFO]   - rule80A: 
+[2025-10-22 10:18:12] [INFO]   - allOrNone: False
+[2025-10-22 10:18:12] [INFO]   - minQty: 2147483647
+[2025-10-22 10:18:12] [INFO]   - percentOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - overridePercentageConstraints: False
+[2025-10-22 10:18:12] [INFO]   - trailStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - trailingPercent: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - faGroup: 
+[2025-10-22 10:18:12] [INFO]   - faProfile: 
+[2025-10-22 10:18:12] [INFO]   - faMethod: 
+[2025-10-22 10:18:12] [INFO]   - faPercentage: 
+[2025-10-22 10:18:12] [INFO]   - designatedLocation: 
+[2025-10-22 10:18:12] [INFO]   - openClose: 
+[2025-10-22 10:18:12] [INFO]   - origin: 0
+[2025-10-22 10:18:12] [INFO]   - shortSaleSlot: 0
+[2025-10-22 10:18:12] [INFO]   - exemptCode: -1
+[2025-10-22 10:18:12] [INFO]   - discretionaryAmt: 0
+[2025-10-22 10:18:12] [INFO]   - eTradeOnly: False
+[2025-10-22 10:18:12] [INFO]   - firmQuoteOnly: False
+[2025-10-22 10:18:12] [INFO]   - nbboPriceCap: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - optOutSmartRouting: False
+[2025-10-22 10:18:12] [INFO]   - auctionStrategy: 0
+[2025-10-22 10:18:12] [INFO]   - startingPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - stockRefPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - delta: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - stockRangeLower: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - stockRangeUpper: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - randomizePrice: False
+[2025-10-22 10:18:12] [INFO]   - randomizeSize: False
+[2025-10-22 10:18:12] [INFO]   - volatility: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - volatilityType: 2147483647
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralOrderType: 
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralAuxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralConId: 0
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralSettlingFirm: 
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralClearingAccount: 
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralClearingIntent: 
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralOpenClose: 
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralShortSale: False
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralShortSaleSlot: 0
+[2025-10-22 10:18:12] [INFO]   - deltaNeutralDesignatedLocation: 
+[2025-10-22 10:18:12] [INFO]   - continuousUpdate: False
+[2025-10-22 10:18:12] [INFO]   - referencePriceType: 2147483647
+[2025-10-22 10:18:12] [INFO]   - basisPoints: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - basisPointsType: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scaleInitLevelSize: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scaleSubsLevelSize: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scalePriceIncrement: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - scalePriceAdjustValue: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - scalePriceAdjustInterval: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scaleProfitOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - scaleAutoReset: False
+[2025-10-22 10:18:12] [INFO]   - scaleInitPosition: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scaleInitFillQty: 2147483647
+[2025-10-22 10:18:12] [INFO]   - scaleRandomPercent: False
+[2025-10-22 10:18:12] [INFO]   - scaleTable: 
+[2025-10-22 10:18:12] [INFO]   - hedgeType: 
+[2025-10-22 10:18:12] [INFO]   - hedgeParam: 
+[2025-10-22 10:18:12] [INFO]   - account: DU5330979
+[2025-10-22 10:18:12] [INFO]   - settlingFirm: 
+[2025-10-22 10:18:12] [INFO]   - clearingAccount: 
+[2025-10-22 10:18:12] [INFO]   - clearingIntent: 
+[2025-10-22 10:18:12] [INFO]   - algoStrategy: 
+[2025-10-22 10:18:12] [INFO]   - algoParams: None
+[2025-10-22 10:18:12] [INFO]   - smartComboRoutingParams: None
+[2025-10-22 10:18:12] [INFO]   - algoId: 
+[2025-10-22 10:18:12] [INFO]   - whatIf: False
+[2025-10-22 10:18:12] [INFO]   - notHeld: False
+[2025-10-22 10:18:12] [INFO]   - solicited: False
+[2025-10-22 10:18:12] [INFO]   - modelCode: 
+[2025-10-22 10:18:12] [INFO]   - orderComboLegs: None
+[2025-10-22 10:18:12] [INFO]   - orderMiscOptions: None
+[2025-10-22 10:18:12] [INFO]   - referenceContractId: 0
+[2025-10-22 10:18:12] [INFO]   - peggedChangeAmount: 0.0
+[2025-10-22 10:18:12] [INFO]   - isPeggedChangeAmountDecrease: False
+[2025-10-22 10:18:12] [INFO]   - referenceChangeAmount: 0.0
+[2025-10-22 10:18:12] [INFO]   - referenceExchangeId: 
+[2025-10-22 10:18:12] [INFO]   - adjustedOrderType: 
+[2025-10-22 10:18:12] [INFO]   - triggerPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - adjustedStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - adjustedStopLimitPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - adjustedTrailingAmount: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - adjustableTrailingUnit: 0
+[2025-10-22 10:18:12] [INFO]   - lmtPriceOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - conditions: []
+[2025-10-22 10:18:12] [INFO]   - conditionsCancelOrder: False
+[2025-10-22 10:18:12] [INFO]   - conditionsIgnoreRth: False
+[2025-10-22 10:18:12] [INFO]   - extOperator: 
+[2025-10-22 10:18:12] [INFO]   - cashQty: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - mifid2DecisionMaker: 
+[2025-10-22 10:18:12] [INFO]   - mifid2DecisionAlgo: 
+[2025-10-22 10:18:12] [INFO]   - mifid2ExecutionTrader: 
+[2025-10-22 10:18:12] [INFO]   - mifid2ExecutionAlgo: 
+[2025-10-22 10:18:12] [INFO]   - dontUseAutoPriceForHedge: False
+[2025-10-22 10:18:12] [INFO]   - isOmsContainer: False
+[2025-10-22 10:18:12] [INFO]   - discretionaryUpToLimitPrice: False
+[2025-10-22 10:18:12] [INFO]   - autoCancelDate: 
+[2025-10-22 10:18:12] [INFO]   - filledQuantity: 1.7976931348623157e+308
+[2025-10-22 10:18:12] [INFO]   - refFuturesConId: 0
+[2025-10-22 10:18:12] [INFO]   - autoCancelParent: False
+[2025-10-22 10:18:12] [INFO]   - shareholder: 
+[2025-10-22 10:18:12] [INFO]   - imbalanceOnly: False
+[2025-10-22 10:18:12] [INFO]   - routeMarketableToBbo: False
+[2025-10-22 10:18:12] [INFO]   - parentPermId: 0
+[2025-10-22 10:18:12] [INFO]   - usePriceMgmtAlgo: None
+[2025-10-22 10:18:12] [INFO] ----------------------------------------------------------
+[2025-10-22 10:18:12] [INFO] ✓ ✓ placeOrder() API call completed for order #10
+[2025-10-22 10:18:13] [INFO] ⏳ Waiting for TWS callbacks...
+[2025-10-22 10:18:13] [INFO]    Expected callbacks:
+[2025-10-22 10:18:13] [INFO]    1. orderStatus() with status 'PreSubmitted' or 'Submitted'
+[2025-10-22 10:18:13] [INFO]    2. openOrder() with full order details
+[2025-10-22 10:18:13] [WARNING]    If no callbacks within 3 seconds, check TWS Order Management window
+[2025-10-22 10:18:13] [INFO] ✓ Exit order #10 submitted with mid-price chasing
+[2025-10-22 10:18:13] [INFO] ============================================================
+[2025-10-22 10:18:13] [INFO] ✓ ============================================================
+[2025-10-22 10:18:13] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #10 ✓✓✓
+[2025-10-22 10:18:13] [INFO] Contract: SPX_6765_C_20251022
+[2025-10-22 10:18:13] [INFO] Action: SELL 1.0 @ $0.30
+[2025-10-22 10:18:13] [INFO] Order State: Submitted
+[2025-10-22 10:18:13] [INFO] ✓ ============================================================
+[2025-10-22 10:18:13] [INFO] Order 10: Submitted - Filled: 0.0 @ 0.0
+[2025-10-22 10:18:16] [WARNING] ⚠️ WARNING: No callbacks received for order #10 after 3 seconds
+[2025-10-22 10:18:16] [WARNING]    This usually means:
+[2025-10-22 10:18:16] [WARNING]    1. TWS rejected the order silently (check TWS Messages)
+[2025-10-22 10:18:16] [WARNING]    2. Order precautions not bypassed (check TWS API settings)
+[2025-10-22 10:18:16] [WARNING]    3. Contract format issue (check TradingClass)
+[2025-10-22 10:18:16] [INFO] Position closed: SPX_6765_C_20251022
+[2025-10-22 10:18:16] [INFO] ✓ Execution: Order #10 - SPX_6765_C_20251022 SLD 1.0 @ $0.30
+[2025-10-22 10:18:16] [INFO] ✓ ============================================================
+[2025-10-22 10:18:16] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #10 ✓✓✓
+[2025-10-22 10:18:16] [INFO] Contract: SPX_6765_C_20251022
+[2025-10-22 10:18:16] [INFO] Action: SELL 1.0 @ $0.30
+[2025-10-22 10:18:16] [INFO] Order State: Filled
+[2025-10-22 10:18:16] [INFO] ✓ ============================================================
+[2025-10-22 10:18:16] [INFO] Order 10: Filled - Filled: 1.0 @ 0.3
+[2025-10-22 10:18:16] [INFO] ✓ ============================================================
+[2025-10-22 10:18:16] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #10 ✓✓✓
+[2025-10-22 10:18:16] [INFO] Contract: SPX_6765_C_20251022
+[2025-10-22 10:18:16] [INFO] Action: SELL 1.0 @ $0.30
+[2025-10-22 10:18:16] [INFO] Order State: Filled
+[2025-10-22 10:18:16] [INFO] ✓ ============================================================
+[2025-10-22 10:18:16] [INFO] Order 10: Filled - Filled: 1.0 @ 0.3
+[2025-10-22 10:18:16] [INFO] Position closed: SPX_6765_C_20251022
+[2025-10-22 10:18:32] [INFO] ============================================================
+[2025-10-22 10:18:32] [INFO] ✓ MANUAL CLOSE POSITION: SPX_6775_C_20251022
+[2025-10-22 10:18:32] [INFO] Exit order: SELL 1 @ $0.15
+[2025-10-22 10:18:32] [INFO] Contract: SPX 6775.0 C 20251022
+[2025-10-22 10:18:32] [INFO] ✓ Contract validation passed - all required fields present
+[2025-10-22 10:18:32] [INFO] === PLACING ORDER #11 ===
+[2025-10-22 10:18:32] [INFO] Contract: SPX 6775.0C 20251022
+[2025-10-22 10:18:32] [INFO] Order: SELL 1 LMT @ $0.15
+[2025-10-22 10:18:32] [INFO] TradingClass: SPXW
+[2025-10-22 10:18:32] [INFO] Exchange: SMART
+[2025-10-22 10:18:32] [INFO] Account: DU5330979
+[2025-10-22 10:18:32] [INFO] Mid-Price Chasing: ENABLED
+[2025-10-22 10:18:32] [INFO] -------------------- CONTRACT DETAILS --------------------
+[2025-10-22 10:18:32] [INFO]   - conId: 814424207
+[2025-10-22 10:18:32] [INFO]   - symbol: SPX
+[2025-10-22 10:18:32] [INFO]   - secType: OPT
+[2025-10-22 10:18:32] [INFO]   - lastTradeDateOrContractMonth: 20251022
+[2025-10-22 10:18:32] [INFO]   - strike: 6775.0
+[2025-10-22 10:18:32] [INFO]   - right: C
+[2025-10-22 10:18:32] [INFO]   - multiplier: 100
+[2025-10-22 10:18:32] [INFO]   - exchange: SMART
+[2025-10-22 10:18:32] [INFO]   - currency: USD
+[2025-10-22 10:18:32] [INFO]   - localSymbol: SPXW  251022C06775000
+[2025-10-22 10:18:32] [INFO]   - tradingClass: SPXW
+[2025-10-22 10:18:32] [INFO] -------------------- ORDER DETAILS --------------------
+[2025-10-22 10:18:32] [INFO]   - softDollarTier: Name: , Value: , DisplayName: 
+[2025-10-22 10:18:32] [INFO]   - orderId: 0
+[2025-10-22 10:18:32] [INFO]   - clientId: 0
+[2025-10-22 10:18:32] [INFO]   - permId: 0
+[2025-10-22 10:18:32] [INFO]   - action: SELL
+[2025-10-22 10:18:32] [INFO]   - totalQuantity: 1
+[2025-10-22 10:18:32] [INFO]   - orderType: LMT
+[2025-10-22 10:18:32] [INFO]   - lmtPrice: 0.15000000000000002
+[2025-10-22 10:18:32] [INFO]   - auxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - tif: DAY
+[2025-10-22 10:18:32] [INFO]   - activeStartTime: 
+[2025-10-22 10:18:32] [INFO]   - activeStopTime: 
+[2025-10-22 10:18:32] [INFO]   - ocaGroup: 
+[2025-10-22 10:18:32] [INFO]   - ocaType: 0
+[2025-10-22 10:18:32] [INFO]   - orderRef: 
+[2025-10-22 10:18:32] [INFO]   - transmit: True
+[2025-10-22 10:18:32] [INFO]   - parentId: 0
+[2025-10-22 10:18:32] [INFO]   - blockOrder: False
+[2025-10-22 10:18:32] [INFO]   - sweepToFill: False
+[2025-10-22 10:18:32] [INFO]   - displaySize: 0
+[2025-10-22 10:18:32] [INFO]   - triggerMethod: 0
+[2025-10-22 10:18:32] [INFO]   - outsideRth: False
+[2025-10-22 10:18:32] [INFO]   - hidden: False
+[2025-10-22 10:18:32] [INFO]   - goodAfterTime: 
+[2025-10-22 10:18:32] [INFO]   - goodTillDate: 
+[2025-10-22 10:18:32] [INFO]   - rule80A: 
+[2025-10-22 10:18:32] [INFO]   - allOrNone: False
+[2025-10-22 10:18:32] [INFO]   - minQty: 2147483647
+[2025-10-22 10:18:32] [INFO]   - percentOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - overridePercentageConstraints: False
+[2025-10-22 10:18:32] [INFO]   - trailStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - trailingPercent: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - faGroup: 
+[2025-10-22 10:18:32] [INFO]   - faProfile: 
+[2025-10-22 10:18:32] [INFO]   - faMethod: 
+[2025-10-22 10:18:32] [INFO]   - faPercentage: 
+[2025-10-22 10:18:32] [INFO]   - designatedLocation: 
+[2025-10-22 10:18:32] [INFO]   - openClose: 
+[2025-10-22 10:18:32] [INFO]   - origin: 0
+[2025-10-22 10:18:32] [INFO]   - shortSaleSlot: 0
+[2025-10-22 10:18:32] [INFO]   - exemptCode: -1
+[2025-10-22 10:18:32] [INFO]   - discretionaryAmt: 0
+[2025-10-22 10:18:32] [INFO]   - eTradeOnly: False
+[2025-10-22 10:18:32] [INFO]   - firmQuoteOnly: False
+[2025-10-22 10:18:32] [INFO]   - nbboPriceCap: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - optOutSmartRouting: False
+[2025-10-22 10:18:32] [INFO]   - auctionStrategy: 0
+[2025-10-22 10:18:32] [INFO]   - startingPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - stockRefPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - delta: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - stockRangeLower: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - stockRangeUpper: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - randomizePrice: False
+[2025-10-22 10:18:32] [INFO]   - randomizeSize: False
+[2025-10-22 10:18:32] [INFO]   - volatility: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - volatilityType: 2147483647
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralOrderType: 
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralAuxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralConId: 0
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralSettlingFirm: 
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralClearingAccount: 
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralClearingIntent: 
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralOpenClose: 
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralShortSale: False
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralShortSaleSlot: 0
+[2025-10-22 10:18:32] [INFO]   - deltaNeutralDesignatedLocation: 
+[2025-10-22 10:18:32] [INFO]   - continuousUpdate: False
+[2025-10-22 10:18:32] [INFO]   - referencePriceType: 2147483647
+[2025-10-22 10:18:32] [INFO]   - basisPoints: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - basisPointsType: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scaleInitLevelSize: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scaleSubsLevelSize: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scalePriceIncrement: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - scalePriceAdjustValue: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - scalePriceAdjustInterval: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scaleProfitOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - scaleAutoReset: False
+[2025-10-22 10:18:32] [INFO]   - scaleInitPosition: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scaleInitFillQty: 2147483647
+[2025-10-22 10:18:32] [INFO]   - scaleRandomPercent: False
+[2025-10-22 10:18:32] [INFO]   - scaleTable: 
+[2025-10-22 10:18:32] [INFO]   - hedgeType: 
+[2025-10-22 10:18:32] [INFO]   - hedgeParam: 
+[2025-10-22 10:18:32] [INFO]   - account: DU5330979
+[2025-10-22 10:18:32] [INFO]   - settlingFirm: 
+[2025-10-22 10:18:32] [INFO]   - clearingAccount: 
+[2025-10-22 10:18:32] [INFO]   - clearingIntent: 
+[2025-10-22 10:18:32] [INFO]   - algoStrategy: 
+[2025-10-22 10:18:32] [INFO]   - algoParams: None
+[2025-10-22 10:18:32] [INFO]   - smartComboRoutingParams: None
+[2025-10-22 10:18:32] [INFO]   - algoId: 
+[2025-10-22 10:18:32] [INFO]   - whatIf: False
+[2025-10-22 10:18:32] [INFO]   - notHeld: False
+[2025-10-22 10:18:32] [INFO]   - solicited: False
+[2025-10-22 10:18:32] [INFO]   - modelCode: 
+[2025-10-22 10:18:32] [INFO]   - orderComboLegs: None
+[2025-10-22 10:18:32] [INFO]   - orderMiscOptions: None
+[2025-10-22 10:18:32] [INFO]   - referenceContractId: 0
+[2025-10-22 10:18:32] [INFO]   - peggedChangeAmount: 0.0
+[2025-10-22 10:18:32] [INFO]   - isPeggedChangeAmountDecrease: False
+[2025-10-22 10:18:32] [INFO]   - referenceChangeAmount: 0.0
+[2025-10-22 10:18:32] [INFO]   - referenceExchangeId: 
+[2025-10-22 10:18:32] [INFO]   - adjustedOrderType: 
+[2025-10-22 10:18:32] [INFO]   - triggerPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - adjustedStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - adjustedStopLimitPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - adjustedTrailingAmount: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - adjustableTrailingUnit: 0
+[2025-10-22 10:18:32] [INFO]   - lmtPriceOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - conditions: []
+[2025-10-22 10:18:32] [INFO]   - conditionsCancelOrder: False
+[2025-10-22 10:18:32] [INFO]   - conditionsIgnoreRth: False
+[2025-10-22 10:18:32] [INFO]   - extOperator: 
+[2025-10-22 10:18:32] [INFO]   - cashQty: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - mifid2DecisionMaker: 
+[2025-10-22 10:18:32] [INFO]   - mifid2DecisionAlgo: 
+[2025-10-22 10:18:32] [INFO]   - mifid2ExecutionTrader: 
+[2025-10-22 10:18:32] [INFO]   - mifid2ExecutionAlgo: 
+[2025-10-22 10:18:32] [INFO]   - dontUseAutoPriceForHedge: False
+[2025-10-22 10:18:32] [INFO]   - isOmsContainer: False
+[2025-10-22 10:18:32] [INFO]   - discretionaryUpToLimitPrice: False
+[2025-10-22 10:18:32] [INFO]   - autoCancelDate: 
+[2025-10-22 10:18:32] [INFO]   - filledQuantity: 1.7976931348623157e+308
+[2025-10-22 10:18:32] [INFO]   - refFuturesConId: 0
+[2025-10-22 10:18:32] [INFO]   - autoCancelParent: False
+[2025-10-22 10:18:32] [INFO]   - shareholder: 
+[2025-10-22 10:18:32] [INFO]   - imbalanceOnly: False
+[2025-10-22 10:18:32] [INFO]   - routeMarketableToBbo: False
+[2025-10-22 10:18:32] [INFO]   - parentPermId: 0
+[2025-10-22 10:18:32] [INFO]   - usePriceMgmtAlgo: None
+[2025-10-22 10:18:32] [INFO] ----------------------------------------------------------
+[2025-10-22 10:18:32] [INFO] ✓ ✓ placeOrder() API call completed for order #11
+[2025-10-22 10:18:32] [INFO] ⏳ Waiting for TWS callbacks...
+[2025-10-22 10:18:32] [INFO]    Expected callbacks:
+[2025-10-22 10:18:32] [INFO]    1. orderStatus() with status 'PreSubmitted' or 'Submitted'
+[2025-10-22 10:18:32] [INFO]    2. openOrder() with full order details
+[2025-10-22 10:18:32] [WARNING]    If no callbacks within 3 seconds, check TWS Order Management window
+[2025-10-22 10:18:32] [INFO] ✓ Exit order #11 submitted with mid-price chasing
+[2025-10-22 10:18:32] [INFO] ============================================================
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #11 ✓✓✓
+[2025-10-22 10:18:32] [INFO] Contract: SPX_6775_C_20251022
+[2025-10-22 10:18:32] [INFO] Action: SELL 1.0 @ $0.15
+[2025-10-22 10:18:32] [INFO] Order State: PreSubmitted
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] Order 11: PreSubmitted - Filled: 0.0 @ 0.0
+[2025-10-22 10:18:32] [INFO] Position closed: SPX_6775_C_20251022
+[2025-10-22 10:18:32] [INFO] ✓ Execution: Order #11 - SPX_6775_C_20251022 SLD 1.0 @ $0.15
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #11 ✓✓✓
+[2025-10-22 10:18:32] [INFO] Contract: SPX_6775_C_20251022
+[2025-10-22 10:18:32] [INFO] Action: SELL 1.0 @ $0.15
+[2025-10-22 10:18:32] [INFO] Order State: Filled
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] Order 11: Filled - Filled: 1.0 @ 0.15
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #11 ✓✓✓
+[2025-10-22 10:18:32] [INFO] Contract: SPX_6775_C_20251022
+[2025-10-22 10:18:32] [INFO] Action: SELL 1.0 @ $0.15
+[2025-10-22 10:18:32] [INFO] Order State: Filled
+[2025-10-22 10:18:32] [INFO] ✓ ============================================================
+[2025-10-22 10:18:32] [INFO] Order 11: Filled - Filled: 1.0 @ 0.15
+[2025-10-22 10:18:32] [INFO] Position closed: SPX_6775_C_20251022
+[2025-10-22 10:18:43] [INFO] ============================================================
+[2025-10-22 10:18:43] [INFO] ✓ MANUAL CLOSE POSITION: SPX_6760_C_20251022
+[2025-10-22 10:18:43] [INFO] Exit order: SELL 1 @ $0.40
+[2025-10-22 10:18:43] [INFO] Contract: SPX 6760.0 C 20251022
+[2025-10-22 10:18:43] [INFO] ✓ Contract validation passed - all required fields present
+[2025-10-22 10:18:43] [INFO] === PLACING ORDER #12 ===
+[2025-10-22 10:18:43] [INFO] Contract: SPX 6760.0C 20251022
+[2025-10-22 10:18:43] [INFO] Order: SELL 1 LMT @ $0.40
+[2025-10-22 10:18:43] [INFO] TradingClass: SPXW
+[2025-10-22 10:18:43] [INFO] Exchange: SMART
+[2025-10-22 10:18:43] [INFO] Account: DU5330979
+[2025-10-22 10:18:43] [INFO] Mid-Price Chasing: ENABLED
+[2025-10-22 10:18:43] [INFO] -------------------- CONTRACT DETAILS --------------------
+[2025-10-22 10:18:43] [INFO]   - conId: 817020292
+[2025-10-22 10:18:43] [INFO]   - symbol: SPX
+[2025-10-22 10:18:43] [INFO]   - secType: OPT
+[2025-10-22 10:18:43] [INFO]   - lastTradeDateOrContractMonth: 20251022
+[2025-10-22 10:18:43] [INFO]   - strike: 6760.0
+[2025-10-22 10:18:43] [INFO]   - right: C
+[2025-10-22 10:18:43] [INFO]   - multiplier: 100
+[2025-10-22 10:18:43] [INFO]   - exchange: SMART
+[2025-10-22 10:18:43] [INFO]   - currency: USD
+[2025-10-22 10:18:43] [INFO]   - localSymbol: SPXW  251022C06760000
+[2025-10-22 10:18:43] [INFO]   - tradingClass: SPXW
+[2025-10-22 10:18:43] [INFO] -------------------- ORDER DETAILS --------------------
+[2025-10-22 10:18:43] [INFO]   - softDollarTier: Name: , Value: , DisplayName: 
+[2025-10-22 10:18:43] [INFO]   - orderId: 0
+[2025-10-22 10:18:43] [INFO]   - clientId: 0
+[2025-10-22 10:18:43] [INFO]   - permId: 0
+[2025-10-22 10:18:43] [INFO]   - action: SELL
+[2025-10-22 10:18:43] [INFO]   - totalQuantity: 1
+[2025-10-22 10:18:43] [INFO]   - orderType: LMT
+[2025-10-22 10:18:43] [INFO]   - lmtPrice: 0.4
+[2025-10-22 10:18:43] [INFO]   - auxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - tif: DAY
+[2025-10-22 10:18:43] [INFO]   - activeStartTime: 
+[2025-10-22 10:18:43] [INFO]   - activeStopTime: 
+[2025-10-22 10:18:43] [INFO]   - ocaGroup: 
+[2025-10-22 10:18:43] [INFO]   - ocaType: 0
+[2025-10-22 10:18:43] [INFO]   - orderRef: 
+[2025-10-22 10:18:43] [INFO]   - transmit: True
+[2025-10-22 10:18:43] [INFO]   - parentId: 0
+[2025-10-22 10:18:43] [INFO]   - blockOrder: False
+[2025-10-22 10:18:43] [INFO]   - sweepToFill: False
+[2025-10-22 10:18:43] [INFO]   - displaySize: 0
+[2025-10-22 10:18:43] [INFO]   - triggerMethod: 0
+[2025-10-22 10:18:43] [INFO]   - outsideRth: False
+[2025-10-22 10:18:43] [INFO]   - hidden: False
+[2025-10-22 10:18:43] [INFO]   - goodAfterTime: 
+[2025-10-22 10:18:43] [INFO]   - goodTillDate: 
+[2025-10-22 10:18:43] [INFO]   - rule80A: 
+[2025-10-22 10:18:43] [INFO]   - allOrNone: False
+[2025-10-22 10:18:43] [INFO]   - minQty: 2147483647
+[2025-10-22 10:18:43] [INFO]   - percentOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - overridePercentageConstraints: False
+[2025-10-22 10:18:43] [INFO]   - trailStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - trailingPercent: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - faGroup: 
+[2025-10-22 10:18:43] [INFO]   - faProfile: 
+[2025-10-22 10:18:43] [INFO]   - faMethod: 
+[2025-10-22 10:18:43] [INFO]   - faPercentage: 
+[2025-10-22 10:18:43] [INFO]   - designatedLocation: 
+[2025-10-22 10:18:43] [INFO]   - openClose: 
+[2025-10-22 10:18:43] [INFO]   - origin: 0
+[2025-10-22 10:18:43] [INFO]   - shortSaleSlot: 0
+[2025-10-22 10:18:43] [INFO]   - exemptCode: -1
+[2025-10-22 10:18:43] [INFO]   - discretionaryAmt: 0
+[2025-10-22 10:18:43] [INFO]   - eTradeOnly: False
+[2025-10-22 10:18:43] [INFO]   - firmQuoteOnly: False
+[2025-10-22 10:18:43] [INFO]   - nbboPriceCap: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - optOutSmartRouting: False
+[2025-10-22 10:18:43] [INFO]   - auctionStrategy: 0
+[2025-10-22 10:18:43] [INFO]   - startingPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - stockRefPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - delta: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - stockRangeLower: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - stockRangeUpper: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - randomizePrice: False
+[2025-10-22 10:18:43] [INFO]   - randomizeSize: False
+[2025-10-22 10:18:43] [INFO]   - volatility: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - volatilityType: 2147483647
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralOrderType: 
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralAuxPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralConId: 0
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralSettlingFirm: 
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralClearingAccount: 
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralClearingIntent: 
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralOpenClose: 
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralShortSale: False
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralShortSaleSlot: 0
+[2025-10-22 10:18:43] [INFO]   - deltaNeutralDesignatedLocation: 
+[2025-10-22 10:18:43] [INFO]   - continuousUpdate: False
+[2025-10-22 10:18:43] [INFO]   - referencePriceType: 2147483647
+[2025-10-22 10:18:43] [INFO]   - basisPoints: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - basisPointsType: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scaleInitLevelSize: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scaleSubsLevelSize: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scalePriceIncrement: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - scalePriceAdjustValue: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - scalePriceAdjustInterval: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scaleProfitOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - scaleAutoReset: False
+[2025-10-22 10:18:43] [INFO]   - scaleInitPosition: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scaleInitFillQty: 2147483647
+[2025-10-22 10:18:43] [INFO]   - scaleRandomPercent: False
+[2025-10-22 10:18:43] [INFO]   - scaleTable: 
+[2025-10-22 10:18:43] [INFO]   - hedgeType: 
+[2025-10-22 10:18:43] [INFO]   - hedgeParam: 
+[2025-10-22 10:18:43] [INFO]   - account: DU5330979
+[2025-10-22 10:18:43] [INFO]   - settlingFirm: 
+[2025-10-22 10:18:43] [INFO]   - clearingAccount: 
+[2025-10-22 10:18:43] [INFO]   - clearingIntent: 
+[2025-10-22 10:18:43] [INFO]   - algoStrategy: 
+[2025-10-22 10:18:43] [INFO]   - algoParams: None
+[2025-10-22 10:18:43] [INFO]   - smartComboRoutingParams: None
+[2025-10-22 10:18:43] [INFO]   - algoId: 
+[2025-10-22 10:18:43] [INFO]   - whatIf: False
+[2025-10-22 10:18:43] [INFO]   - notHeld: False
+[2025-10-22 10:18:43] [INFO]   - solicited: False
+[2025-10-22 10:18:43] [INFO]   - modelCode: 
+[2025-10-22 10:18:43] [INFO]   - orderComboLegs: None
+[2025-10-22 10:18:43] [INFO]   - orderMiscOptions: None
+[2025-10-22 10:18:43] [INFO]   - referenceContractId: 0
+[2025-10-22 10:18:43] [INFO]   - peggedChangeAmount: 0.0
+[2025-10-22 10:18:43] [INFO]   - isPeggedChangeAmountDecrease: False
+[2025-10-22 10:18:43] [INFO]   - referenceChangeAmount: 0.0
+[2025-10-22 10:18:43] [INFO]   - referenceExchangeId: 
+[2025-10-22 10:18:43] [INFO]   - adjustedOrderType: 
+[2025-10-22 10:18:43] [INFO]   - triggerPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - adjustedStopPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - adjustedStopLimitPrice: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - adjustedTrailingAmount: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - adjustableTrailingUnit: 0
+[2025-10-22 10:18:43] [INFO]   - lmtPriceOffset: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - conditions: []
+[2025-10-22 10:18:43] [INFO]   - conditionsCancelOrder: False
+[2025-10-22 10:18:43] [INFO]   - conditionsIgnoreRth: False
+[2025-10-22 10:18:43] [INFO]   - extOperator: 
+[2025-10-22 10:18:43] [INFO]   - cashQty: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - mifid2DecisionMaker: 
+[2025-10-22 10:18:43] [INFO]   - mifid2DecisionAlgo: 
+[2025-10-22 10:18:43] [INFO]   - mifid2ExecutionTrader: 
+[2025-10-22 10:18:43] [INFO]   - mifid2ExecutionAlgo: 
+[2025-10-22 10:18:43] [INFO]   - dontUseAutoPriceForHedge: False
+[2025-10-22 10:18:43] [INFO]   - isOmsContainer: False
+[2025-10-22 10:18:43] [INFO]   - discretionaryUpToLimitPrice: False
+[2025-10-22 10:18:43] [INFO]   - autoCancelDate: 
+[2025-10-22 10:18:43] [INFO]   - filledQuantity: 1.7976931348623157e+308
+[2025-10-22 10:18:43] [INFO]   - refFuturesConId: 0
+[2025-10-22 10:18:43] [INFO]   - autoCancelParent: False
+[2025-10-22 10:18:43] [INFO]   - shareholder: 
+[2025-10-22 10:18:43] [INFO]   - imbalanceOnly: False
+[2025-10-22 10:18:43] [INFO]   - routeMarketableToBbo: False
+[2025-10-22 10:18:43] [INFO]   - parentPermId: 0
+[2025-10-22 10:18:43] [INFO]   - usePriceMgmtAlgo: None
+[2025-10-22 10:18:43] [INFO] ----------------------------------------------------------
+[2025-10-22 10:18:43] [INFO] ✓ ✓ placeOrder() API call completed for order #12
+[2025-10-22 10:18:43] [INFO] ⏳ Waiting for TWS callbacks...
+[2025-10-22 10:18:43] [INFO]    Expected callbacks:
+[2025-10-22 10:18:43] [INFO]    1. orderStatus() with status 'PreSubmitted' or 'Submitted'
+[2025-10-22 10:18:43] [INFO]    2. openOrder() with full order details
+[2025-10-22 10:18:43] [WARNING]    If no callbacks within 3 seconds, check TWS Order Management window
+[2025-10-22 10:18:43] [INFO] ✓ Exit order #12 submitted with mid-price chasing
+[2025-10-22 10:18:43] [INFO] ============================================================
+[2025-10-22 10:18:43] [INFO] ✓ ============================================================
+[2025-10-22 10:18:43] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #12 ✓✓✓
+[2025-10-22 10:18:43] [INFO] Contract: SPX_6760_C_20251022
+[2025-10-22 10:18:43] [INFO] Action: SELL 1.0 @ $0.40
+[2025-10-22 10:18:43] [INFO] Order State: Submitted
+[2025-10-22 10:18:43] [INFO] ✓ ============================================================
+[2025-10-22 10:18:43] [INFO] Order 12: Submitted - Filled: 0.0 @ 0.0
+[2025-10-22 10:18:46] [WARNING] ⚠️ WARNING: No callbacks received for order #12 after 3 seconds
+[2025-10-22 10:18:46] [WARNING]    This usually means:
+[2025-10-22 10:18:46] [WARNING]    1. TWS rejected the order silently (check TWS Messages)
+[2025-10-22 10:18:46] [WARNING]    2. Order precautions not bypassed (check TWS API settings)
+[2025-10-22 10:18:46] [WARNING]    3. Contract format issue (check TradingClass)
+[2025-10-22 10:19:18] [INFO] Position closed: SPX_6760_C_20251022
+[2025-10-22 10:19:18] [INFO] ✓ Execution: Order #12 - SPX_6760_C_20251022 SLD 1.0 @ $0.40
+[2025-10-22 10:19:18] [INFO] ✓ ============================================================
+[2025-10-22 10:19:18] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #12 ✓✓✓
+[2025-10-22 10:19:18] [INFO] Contract: SPX_6760_C_20251022
+[2025-10-22 10:19:18] [INFO] Action: SELL 1.0 @ $0.40
+[2025-10-22 10:19:18] [INFO] Order State: Filled
+[2025-10-22 10:19:18] [INFO] ✓ ============================================================
+[2025-10-22 10:19:18] [INFO] Order 12: Filled - Filled: 1.0 @ 0.4
+[2025-10-22 10:19:18] [INFO] ✓ ============================================================
+[2025-10-22 10:19:18] [INFO] ✓ ✓✓✓ TWS RECEIVED Order #12 ✓✓✓
+[2025-10-22 10:19:18] [INFO] Contract: SPX_6760_C_20251022
+[2025-10-22 10:19:18] [INFO] Action: SELL 1.0 @ $0.40
+[2025-10-22 10:19:18] [INFO] Order State: Filled
+[2025-10-22 10:19:18] [INFO] ✓ ============================================================
+[2025-10-22 10:19:18] [INFO] Order 12: Filled - Filled: 1.0 @ 0.4
+[2025-10-22 10:19:18] [INFO] Position closed: SPX_6760_C_20251022

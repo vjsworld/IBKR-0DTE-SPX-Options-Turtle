@@ -21,11 +21,23 @@ import json
 import os
 import logging
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from collections import deque
 import pandas as pd
 import numpy as np
 from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.patches import Rectangle
+from matplotlib.dates import DateFormatter
+import matplotlib.dates as mdates
 from tksheet import Sheet
+
+# Lightweight-charts for professional TradingView-style charting
+try:
+    from lightweight_charts import Chart
+    LIGHTWEIGHT_CHARTS_AVAILABLE = True
+except ImportError:
+    LIGHTWEIGHT_CHARTS_AVAILABLE = False
+    print("WARNING: lightweight-charts not installed. Run: pip install lightweight-charts")
 
 if TYPE_CHECKING:
     from ttkbootstrap import Window
@@ -398,6 +410,14 @@ class IBKRWrapper(EWrapper):
                 self.app.update_spx_price_display()
             return
         
+        # Check if this is VIX price
+        if reqId == self.app.vix_req_id:
+            if tickType == 4:  # LAST price
+                self.app.vix_price = price
+                if hasattr(self.app, 'update_vix_display'):
+                    self.app.update_vix_display()
+            return
+        
         # Handle option contract prices
         if reqId in self.app.market_data_map:
             contract_key = self.app.market_data_map[reqId]
@@ -484,6 +504,48 @@ class IBKRWrapper(EWrapper):
             # Also remove from manual_orders tracking if present
             if orderId in self.app.manual_orders:
                 del self.app.manual_orders[orderId]
+        
+        # Handle Z-Score strategy order fills
+        if self.app.active_trade_info:
+            trade = self.app.active_trade_info
+            
+            # Entry order filled
+            if orderId == trade.get('order_id') and status == "Filled":
+                trade['status'] = 'FILLED'
+                trade['entry_price'] = avgFillPrice
+                self.app.log_message(
+                    f"STRATEGY: Entry filled @ ${avgFillPrice:.2f}",
+                    "SUCCESS"
+                )
+                if hasattr(self.app, 'strategy_status_var'):
+                    direction = trade.get('direction', 'UNKNOWN')
+                    self.app.strategy_status_var.set(f"Status: IN TRADE ({direction})")
+            
+            # Exit order filled - trade complete
+            elif orderId == trade.get('exit_order_id') and status == "Filled":
+                # Calculate final P&L
+                entry_price = trade.get('entry_price', 0)
+                pnl = (avgFillPrice - entry_price) * self.app.trade_qty * 100
+                
+                # Log trade completion
+                self.app.log_message(
+                    f"STRATEGY: Exit filled @ ${avgFillPrice:.2f} | P&L: ${pnl:.2f} | "
+                    f"Reason: {trade.get('exit_reason', 'Unknown')}",
+                    "SUCCESS" if pnl > 0 else "WARNING"
+                )
+                
+                # Add to trade history
+                trade['exit_price_final'] = avgFillPrice
+                trade['pnl'] = pnl
+                trade['exit_status'] = 'FILLED'
+                self.app.trade_history.append(trade.copy())
+                
+                # Clear active trade
+                self.app.active_trade_info = {}
+                
+                # Update status display
+                if hasattr(self.app, 'strategy_status_var'):
+                    self.app.strategy_status_var.set("Status: SCANNING...")
     
     def openOrder(self, orderId: int, contract: Contract, order: Order,
                  orderState):
@@ -586,7 +648,27 @@ class IBKRWrapper(EWrapper):
     
     def historicalData(self, reqId: int, bar):
         """Receives historical bar data"""
-        if reqId in self.app.historical_data_requests:
+        # Handle SPX 1-min data for Z-Score strategy
+        if reqId == self.app.spx_1min_req_id:
+            self.app.spx_1min_bars.append({
+                'time': bar.date,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close
+            })
+        # Handle chart data for lightweight-charts
+        elif reqId == self.app.chart_hist_req_id:
+            self.app.chart_bar_data.append({
+                'time': bar.date,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close,
+                'volume': bar.volume
+            })
+        # Handle option historical data (existing code)
+        elif reqId in self.app.historical_data_requests:
             contract_key = self.app.historical_data_requests[reqId]
             
             if contract_key not in self.app.historical_data:
@@ -606,7 +688,24 @@ class IBKRWrapper(EWrapper):
     
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         """Called when historical data request is complete"""
-        if reqId in self.app.historical_data_requests:
+        # Handle SPX 1-min data completion
+        if reqId == self.app.spx_1min_req_id:
+            self.app.log_message(
+                f"SPX 1-min history received ({len(self.app.spx_1min_bars)} bars) for Z-Score",
+                "SUCCESS"
+            )
+            self.app.calculate_indicators()
+        # Handle chart data completion
+        elif reqId == self.app.chart_hist_req_id:
+            self.app.log_message(
+                f"Chart historical data received ({len(self.app.chart_bar_data)} bars)",
+                "SUCCESS"
+            )
+            # Update matplotlib chart
+            if hasattr(self.app, 'update_chart_display'):
+                self.app.root.after(100, self.app.update_chart_display)
+        # Handle option historical data (existing code)
+        elif reqId in self.app.historical_data_requests:
             contract_key = self.app.historical_data_requests[reqId]
             bar_count = len(self.app.historical_data.get(contract_key, []))
             
@@ -642,6 +741,21 @@ class IBKRWrapper(EWrapper):
                     self.app.root.after(200, self.app.hide_put_loading)
         else:
             self.app.log_message(f"Historical data end for unknown reqId: {reqId}", "WARNING")
+    
+    def historicalDataUpdate(self, reqId: int, bar):
+        """Called when streaming historical data updates (real-time bars)"""
+        if reqId == self.app.spx_1min_req_id:
+            # Parse the date string to datetime
+            bar_time = datetime.strptime(bar.date, '%Y%m%d  %H:%M:%S')
+            self.app.spx_1min_bars.append({
+                'time': bar_time,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close
+            })
+            # Recalculate indicators with new bar
+            self.app.calculate_indicators()
 
 
 # ============================================================================
@@ -740,6 +854,32 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Supertrend data for each position
         self.supertrend_data = {}  # contract_key -> supertrend values
+        
+        # ========================================================================
+        # Z-SCORE STRATEGY (Gamma-Snap HFS v3.0)
+        # ========================================================================
+        self.strategy_enabled = False
+        self.vix_price = 0.0
+        self.vix_req_id = 999998  # Request ID for VIX data
+        self.vix_threshold = 30.0  # Pause strategy if VIX > this
+        
+        # Z-Score Parameters
+        self.z_score_period = 20  # Rolling period for mean/std calculation
+        self.z_score_threshold = 1.5  # Entry threshold (crosses above/below ±1.5)
+        self.time_stop_minutes = 30  # Max time in trade before forced exit
+        self.trade_qty = 1  # Number of contracts per trade
+        
+        # Strategy Data
+        self.spx_1min_bars = deque(maxlen=390)  # Store SPX 1-min bars (full trading day)
+        self.spx_1min_req_id = 999997  # Request ID for SPX 1-min historical data
+        self.indicators = {'z_score': 0.0, 'ema9': 0.0}  # Current indicator values
+        self.active_trade_info = {}  # Current active trade details
+        self.trade_history = []  # Completed trades
+        
+        # Chart data for lightweight-charts
+        self.chart_bar_data = []
+        self.chart_hist_req_id = 999996
+        self.selected_chart_contract = None
         
         # Queues for thread communication
         self.gui_queue = queue.Queue()
@@ -879,6 +1019,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Tab 2: Settings
         self.create_settings_tab()
         
+        # Tab 3: SPX Chart
+        self.create_chart_tab()
+        
         # Status bar at bottom (inside main_container so it's part of scrollable area)
         self.create_status_bar(main_container)
         
@@ -887,6 +1030,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Start time checker for hourly trades
         self.root.after(1000, self.check_trade_time)
+        
+        # Start Z-Score strategy loop (runs every 5 seconds)
+        self.root.after(5000, self.run_gamma_snap_strategy)
         
         # Auto-connect to IBKR on startup (after GUI is ready)
         if self.auto_connect:
@@ -1479,12 +1625,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.chain_refresh_entry.bind('<FocusOut>', self.auto_save_settings)
         self.chain_refresh_entry.bind('<Return>', self.auto_save_settings)
         
-        # Strategy Automation Control
-        ttk.Label(strategy_frame, text="Strategy Automation:").grid(
-            row=5, column=0, sticky=W, pady=15)
+        # Gamma-Snap Strategy Settings Section
+        gamma_frame = ttk.LabelFrame(scrollable_frame, text="Gamma-Snap Z-Score Strategy",
+                                     padding=20)
+        gamma_frame.pack(fill=X, padx=20, pady=10)
         
-        automation_frame = ttk.Frame(strategy_frame)
-        automation_frame.grid(row=5, column=1, sticky=W, padx=10, pady=15)
+        # Strategy Automation Control
+        ttk.Label(gamma_frame, text="Strategy Automation:").grid(
+            row=0, column=0, sticky=W, pady=15)
+        
+        automation_frame = ttk.Frame(gamma_frame)
+        automation_frame.grid(row=0, column=1, sticky=W, padx=10, pady=15)
         
         # Create ON/OFF buttons with visual feedback
         self.strategy_on_btn = ttk.Button(
@@ -1506,13 +1657,59 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Status label
         self.strategy_status_label = ttk.Label(
             automation_frame, 
-            text="", 
-            font=("Arial", 10, "bold")
+            text="INACTIVE", 
+            font=("Arial", 10, "bold"),
+            foreground="#808080"
         )
         self.strategy_status_label.pack(side=LEFT, padx=10)
         
         # Initialize button states
         self.update_strategy_button_states()
+        
+        # VIX Threshold
+        ttk.Label(gamma_frame, text="VIX Threshold (pause if >):").grid(
+            row=1, column=0, sticky=W, pady=5)
+        self.vix_threshold_entry = ttk.Entry(gamma_frame, width=30)
+        self.vix_threshold_entry.insert(0, str(self.vix_threshold))
+        self.vix_threshold_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
+        self.vix_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.vix_threshold_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Z-Score Period
+        ttk.Label(gamma_frame, text="Z-Score Period (bars):").grid(
+            row=2, column=0, sticky=W, pady=5)
+        self.z_score_period_entry = ttk.Entry(gamma_frame, width=30)
+        self.z_score_period_entry.insert(0, str(self.z_score_period))
+        self.z_score_period_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
+        self.z_score_period_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.z_score_period_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Z-Score Threshold
+        ttk.Label(gamma_frame, text="Z-Score Threshold (±):").grid(
+            row=3, column=0, sticky=W, pady=5)
+        self.z_score_threshold_entry = ttk.Entry(gamma_frame, width=30)
+        self.z_score_threshold_entry.insert(0, str(self.z_score_threshold))
+        self.z_score_threshold_entry.grid(row=3, column=1, sticky=W, padx=10, pady=5)
+        self.z_score_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.z_score_threshold_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Time Stop
+        ttk.Label(gamma_frame, text="Time Stop (minutes):").grid(
+            row=4, column=0, sticky=W, pady=5)
+        self.time_stop_entry = ttk.Entry(gamma_frame, width=30)
+        self.time_stop_entry.insert(0, str(self.time_stop_minutes))
+        self.time_stop_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
+        self.time_stop_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.time_stop_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Trade Quantity
+        ttk.Label(gamma_frame, text="Trade Quantity (contracts):").grid(
+            row=5, column=0, sticky=W, pady=5)
+        self.trade_qty_entry = ttk.Entry(gamma_frame, width=30)
+        self.trade_qty_entry.insert(0, str(self.trade_qty))
+        self.trade_qty_entry.grid(row=5, column=1, sticky=W, padx=10, pady=5)
+        self.trade_qty_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.trade_qty_entry.bind('<Return>', self.auto_save_settings)
         
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
@@ -1528,6 +1725,225 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         canvas.pack(side=LEFT, fill=BOTH, expand=YES)
         scrollbar.pack(side=RIGHT, fill=Y)
+    
+    def create_chart_tab(self):
+        """Create SPX chart tab with candlesticks, 9-EMA, and trade markers"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="SPX Chart")
+        
+        # Chart controls at top
+        controls_frame = ttk.Frame(tab)
+        controls_frame.pack(fill=X, padx=10, pady=10)
+        
+        ttk.Label(controls_frame, text="Chart Period:", font=("Arial", 10, "bold")).pack(side=LEFT, padx=5)
+        self.chart_period_var = tk.StringVar(value="1 D")
+        chart_period_combo = ttk.Combobox(controls_frame, textvariable=self.chart_period_var,
+                                         values=["1 D", "2 D", "5 D"], state="readonly", width=8)
+        chart_period_combo.pack(side=LEFT, padx=5)
+        chart_period_combo.bind('<<ComboboxSelected>>', lambda e: self.request_chart_data())
+        
+        ttk.Label(controls_frame, text="Timeframe:", font=("Arial", 10, "bold")).pack(side=LEFT, padx=15)
+        self.chart_timeframe_var = tk.StringVar(value="1 min")
+        chart_timeframe_combo = ttk.Combobox(controls_frame, textvariable=self.chart_timeframe_var,
+                                            values=["1 min", "5 mins", "15 mins"], state="readonly", width=10)
+        chart_timeframe_combo.pack(side=LEFT, padx=5)
+        chart_timeframe_combo.bind('<<ComboboxSelected>>', lambda e: self.request_chart_data())
+        
+        ttk.Button(controls_frame, text="Refresh Chart", 
+                  command=self.request_chart_data,
+                  style="info.TButton", width=15).pack(side=LEFT, padx=15)
+        
+        self.chart_status_label = ttk.Label(controls_frame, text="Chart: Waiting for data...",
+                                           font=("Arial", 9), foreground="#808080")
+        self.chart_status_label.pack(side=LEFT, padx=10)
+        
+        # Matplotlib figure and canvas
+        self.chart_figure = Figure(figsize=(12, 8), facecolor='#000000')
+        self.chart_ax = self.chart_figure.add_subplot(111)
+        self.chart_ax.set_facecolor('#000000')
+        
+        # Style the chart to match TWS
+        self.chart_ax.tick_params(colors='#808080', which='both')
+        self.chart_ax.spines['bottom'].set_color('#3a3a3a')
+        self.chart_ax.spines['top'].set_color('#3a3a3a')
+        self.chart_ax.spines['left'].set_color('#3a3a3a')
+        self.chart_ax.spines['right'].set_color('#3a3a3a')
+        self.chart_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5)
+        
+        self.chart_canvas = FigureCanvasTkAgg(self.chart_figure, master=tab)
+        self.chart_canvas.get_tk_widget().pack(fill=BOTH, expand=YES, padx=10, pady=10)
+        
+        # Initialize chart variables
+        self.chart_candlestick_data = []
+        self.chart_trade_markers = []
+        
+        self.log_message("Chart tab created - ready for data", "INFO")
+    
+    def request_chart_data(self):
+        """Request SPX historical data for chart display"""
+        if self.connection_state != ConnectionState.CONNECTED:
+            self.log_message("Cannot request chart data - not connected", "WARNING")
+            return
+        
+        # Create SPX index contract
+        spx_contract = Contract()
+        spx_contract.symbol = "SPX"
+        spx_contract.secType = "IND"
+        spx_contract.currency = "USD"
+        spx_contract.exchange = "CBOE"
+        
+        # Clear existing data
+        self.chart_bar_data.clear()
+        self.chart_candlestick_data.clear()
+        
+        # Get period and timeframe from UI
+        period = self.chart_period_var.get()
+        timeframe = self.chart_timeframe_var.get()
+        
+        self.chart_status_label.config(text=f"Loading {period} {timeframe} data...", foreground="#FFA500")
+        
+        # Request historical data
+        self.reqHistoricalData(
+            self.chart_hist_req_id,
+            spx_contract,
+            "",  # End date (empty = now)
+            period,  # Duration (1 D, 2 D, 5 D)
+            timeframe,  # Bar size
+            "TRADES",  # What to show (TRADES, MIDPOINT, BID, ASK)
+            1,  # Use RTH (Regular Trading Hours)
+            1,  # Format date (1 = yyyymmdd hh:mm:ss)
+            False,  # Keep up to date
+            []  # Chart options
+        )
+        
+        self.log_message(f"Requested {period} {timeframe} SPX chart data (reqId: {self.chart_hist_req_id})", "INFO")
+    
+    def update_chart_display(self):
+        """Update the matplotlib chart with candlestick data and indicators"""
+        if not self.chart_bar_data:
+            self.log_message("No chart data to display", "WARNING")
+            return
+        
+        # Convert bar data to DataFrame
+        df = pd.DataFrame(self.chart_bar_data)
+        
+        # Parse time strings to datetime
+        if isinstance(df['time'].iloc[0], str):
+            df['time'] = pd.to_datetime(df['time'], format='%Y%m%d  %H:%M:%S')
+        
+        # Calculate 9-EMA
+        df['ema9'] = df['close'].ewm(span=9, adjust=False).mean()
+        
+        # Calculate Bollinger Bands (optional - using Z-Score period)
+        sma = df['close'].rolling(window=self.z_score_period).mean()
+        std = df['close'].rolling(window=self.z_score_period).std()
+        df['bb_upper'] = sma + (std * 2)
+        df['bb_lower'] = sma - (std * 2)
+        
+        # Clear previous chart
+        self.chart_ax.clear()
+        
+        # Plot candlesticks manually (matplotlib doesn't have built-in candlestick for newer versions)
+        for i, (idx, row) in enumerate(df.iterrows()):
+            color = '#26a69a' if row['close'] >= row['open'] else '#ef5350'  # Green up, red down
+            
+            # Draw the candle body
+            body_height = abs(row['close'] - row['open'])
+            body_bottom = min(row['open'], row['close'])
+            
+            self.chart_ax.add_patch(Rectangle(
+                (i, body_bottom), 0.8, body_height,
+                facecolor=color, edgecolor=color, linewidth=0
+            ))
+            
+            # Draw the wicks
+            self.chart_ax.plot([i + 0.4, i + 0.4], [row['low'], row['high']], 
+                             color=color, linewidth=1)
+        
+        # Plot 9-EMA (profit target line)
+        self.chart_ax.plot(range(len(df)), df['ema9'], color='#FF8C00', linewidth=2, 
+                          label='9-EMA (Profit Target)', alpha=0.9)
+        
+        # Plot Bollinger Bands
+        self.chart_ax.plot(range(len(df)), df['bb_upper'], color='#2962FF', linewidth=1, 
+                          label=f'BB Upper ({self.z_score_period})', alpha=0.5, linestyle='--')
+        self.chart_ax.plot(range(len(df)), df['bb_lower'], color='#2962FF', linewidth=1, 
+                          label=f'BB Lower ({self.z_score_period})', alpha=0.5, linestyle='--')
+        
+        # Add trade markers
+        for trade in self.trade_history:
+            try:
+                # Find closest bar to entry time
+                if 'entry_time' in trade:
+                    time_diffs = (df['time'] - trade['entry_time']).abs()
+                    entry_idx = time_diffs.idxmin()
+                    entry_loc = df.index.get_loc(entry_idx)
+                    # get_loc can return int, slice, or array - we only want int
+                    if isinstance(entry_loc, int):
+                        entry_position = entry_loc
+                    else:
+                        continue  # Skip if not a single integer location
+                    
+                    entry_price = trade.get('entry_price', 0)
+                    if entry_price > 0:
+                        # Entry marker (blue arrow down)
+                        self.chart_ax.scatter(entry_position, entry_price, marker='v', s=200, 
+                                            color='#2196F3', zorder=5, label='Entry' if len(self.trade_history) == 1 else '')
+                        self.chart_ax.text(entry_position, entry_price, f" ${entry_price:.2f}", 
+                                         color='#2196F3', fontsize=8, va='top')
+                
+                # Exit marker
+                if 'exit_time' in trade and trade.get('exit_time'):
+                    time_diffs = (df['time'] - trade['exit_time']).abs()
+                    exit_idx = time_diffs.idxmin()
+                    exit_loc = df.index.get_loc(exit_idx)
+                    # get_loc can return int, slice, or array - we only want int
+                    if isinstance(exit_loc, int):
+                        exit_position = exit_loc
+                    else:
+                        continue  # Skip if not a single integer location
+                    
+                    exit_price = trade.get('exit_price_final', 0)
+                    if exit_price > 0:
+                        # Exit marker (orange arrow up)
+                        pnl = trade.get('pnl', 0)
+                        marker_color = '#00FF00' if pnl > 0 else '#FF0000'
+                        self.chart_ax.scatter(exit_position, exit_price, marker='^', s=200, 
+                                            color=marker_color, zorder=5, label='Exit' if len(self.trade_history) == 1 else '')
+                        self.chart_ax.text(exit_position, exit_price, f" ${exit_price:.2f}\nP&L: ${pnl:.0f}", 
+                                         color=marker_color, fontsize=8, va='bottom')
+            except Exception as e:
+                # Skip trade markers if there's any issue finding the position
+                self.log_message(f"Could not place trade marker: {e}", "WARNING")
+                continue
+        
+        # Chart styling
+        self.chart_ax.set_facecolor('#000000')
+        self.chart_ax.tick_params(colors='#808080', which='both')
+        self.chart_ax.spines['bottom'].set_color('#3a3a3a')
+        self.chart_ax.spines['top'].set_color('#3a3a3a')
+        self.chart_ax.spines['left'].set_color('#3a3a3a')
+        self.chart_ax.spines['right'].set_color('#3a3a3a')
+        self.chart_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5)
+        
+        # Labels
+        self.chart_ax.set_xlabel('Time', color='#808080', fontsize=10)
+        self.chart_ax.set_ylabel('SPX Price', color='#808080', fontsize=10)
+        self.chart_ax.set_title('SPX Index Chart with Strategy Signals', 
+                               color='#C0C0C0', fontsize=12, fontweight='bold')
+        
+        # Legend
+        if df['ema9'].notna().any():
+            legend = self.chart_ax.legend(loc='upper left', facecolor='#1a1a1a', 
+                                        edgecolor='#3a3a3a', framealpha=0.9)
+            for text in legend.get_texts():
+                text.set_color('#C0C0C0')
+        
+        # Refresh canvas
+        self.chart_canvas.draw()
+        
+        self.chart_status_label.config(text=f"Chart: {len(df)} bars loaded", foreground="#00FF00")
+        self.log_message(f"Chart updated with {len(df)} bars", "SUCCESS")
     
     def create_status_bar(self, parent):
         """Create status bar at bottom of window (now inside scrollable container)"""
@@ -1545,15 +1961,41 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                                      style="success.TButton", width=15)
         self.connect_btn.pack(side=LEFT, padx=5, pady=5)
         
-        # Total PnL
-        self.pnl_label = ttk.Label(status_frame, text="Total PnL: $0.00",
-                                  font=("Arial", 10, "bold"))
-        self.pnl_label.pack(side=RIGHT, padx=10, pady=5)
+        # SPX Price (larger, center-ish)
+        self.spx_label = ttk.Label(status_frame, text="SPX: --",
+                                  font=("Arial", 12, "bold"),
+                                  foreground="#00BFFF")
+        self.spx_label.pack(side=LEFT, padx=20, pady=5)
+        
+        # VIX Price
+        self.vix_label = ttk.Label(status_frame, text="VIX: --",
+                                  font=("Arial", 10),
+                                  foreground="#FFA500")
+        self.vix_label.pack(side=LEFT, padx=10, pady=5)
+        
+        # Z-Score Indicator
+        self.z_score_label = ttk.Label(status_frame, text="Z-Score: --",
+                                      font=("Arial", 10),
+                                      foreground="#C0C0C0")
+        self.z_score_label.pack(side=LEFT, padx=10, pady=5)
+        
+        # Strategy Status (use StringVar for dynamic updates)
+        self.strategy_status_var = tk.StringVar(value="Strategy: OFF")
+        self.strategy_status_display = ttk.Label(status_frame, 
+                                                 textvariable=self.strategy_status_var,
+                                                 font=("Arial", 10),
+                                                 foreground="#808080")
+        self.strategy_status_display.pack(side=LEFT, padx=10, pady=5)
         
         # Time
         self.time_label = ttk.Label(status_frame, text="",
                                    font=("Arial", 10))
         self.time_label.pack(side=RIGHT, padx=10, pady=5)
+        
+        # Total PnL
+        self.pnl_label = ttk.Label(status_frame, text="Total PnL: $0.00",
+                                  font=("Arial", 10, "bold"))
+        self.pnl_label.pack(side=RIGHT, padx=10, pady=5)
         
         self.update_time()
     
@@ -1564,6 +2006,47 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.time_label.config(text=current_time)
         self.root.after(1000, self.update_time)
+    
+    def update_vix_display(self):
+        """Update VIX display in status bar"""
+        if not hasattr(self, 'vix_label'):
+            return
+        
+        if self.vix_price > 0:
+            # Color code: Green if low (<20), Yellow if medium (20-30), Red if high (>30)
+            if self.vix_price < 20:
+                color = "#00FF00"  # Green - low volatility
+            elif self.vix_price < 30:
+                color = "#FFA500"  # Orange - medium volatility
+            else:
+                color = "#FF0000"  # Red - high volatility (strategy paused)
+            
+            self.vix_label.config(
+                text=f"VIX: {self.vix_price:.2f}",
+                foreground=color
+            )
+        else:
+            self.vix_label.config(text="VIX: --", foreground="#808080")
+    
+    def update_indicator_display(self):
+        """Update Z-Score and other indicators in status bar"""
+        if not hasattr(self, 'z_score_label'):
+            return
+        
+        z_score = self.indicators.get('z_score', 0)
+        
+        # Color code Z-Score based on threshold
+        if abs(z_score) > self.z_score_threshold:
+            color = "#FF0000"  # Red - beyond threshold (signal zone)
+        elif abs(z_score) > self.z_score_threshold * 0.5:
+            color = "#FFA500"  # Orange - approaching threshold
+        else:
+            color = "#00FF00"  # Green - within normal range
+        
+        self.z_score_label.config(
+            text=f"Z-Score: {z_score:.2f}",
+            foreground=color
+        )
     
     # ========================================================================
     # CONNECTION MANAGEMENT
@@ -1762,6 +2245,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.strikes_below = int(self.strikes_below_entry.get())
             self.chain_refresh_interval = int(self.chain_refresh_entry.get())
             
+            # Z-Score strategy parameters
+            self.vix_threshold = float(self.vix_threshold_entry.get())
+            self.z_score_period = int(self.z_score_period_entry.get())
+            self.z_score_threshold = float(self.z_score_threshold_entry.get())
+            self.time_stop_minutes = int(self.time_stop_entry.get())
+            self.trade_qty = int(self.trade_qty_entry.get())
+            
             settings = {
                 'host': self.host,
                 'port': self.port,
@@ -1772,6 +2262,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'strikes_below': self.strikes_below,
                 'chain_refresh_interval': self.chain_refresh_interval,
                 'strategy_enabled': self.strategy_enabled,
+                # Z-Score Strategy Parameters
+                'vix_threshold': self.vix_threshold,
+                'z_score_period': self.z_score_period,
+                'z_score_threshold': self.z_score_threshold,
+                'time_stop_minutes': self.time_stop_minutes,
+                'trade_qty': self.trade_qty,
                 # Chart settings
                 'call_days': self.call_days_var.get(),
                 'call_timeframe': self.call_timeframe_var.get(),
@@ -1802,6 +2298,14 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.strikes_above = int(self.strikes_above_entry.get())
                 self.strikes_below = int(self.strikes_below_entry.get())
                 self.chain_refresh_interval = int(self.chain_refresh_entry.get())
+                
+                # Z-Score strategy parameters (with fallback)
+                if hasattr(self, 'vix_threshold_entry'):
+                    self.vix_threshold = float(self.vix_threshold_entry.get())
+                    self.z_score_period = int(self.z_score_period_entry.get())
+                    self.z_score_threshold = float(self.z_score_threshold_entry.get())
+                    self.time_stop_minutes = int(self.time_stop_entry.get())
+                    self.trade_qty = int(self.trade_qty_entry.get())
             except (ValueError, AttributeError):
                 # Skip save if validation fails (user still typing)
                 return
@@ -1816,6 +2320,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'strikes_below': self.strikes_below,
                 'chain_refresh_interval': self.chain_refresh_interval,
                 'strategy_enabled': self.strategy_enabled,
+                # Z-Score Strategy Parameters
+                'vix_threshold': self.vix_threshold,
+                'z_score_period': self.z_score_period,
+                'z_score_threshold': self.z_score_threshold,
+                'time_stop_minutes': self.time_stop_minutes,
+                'trade_qty': self.trade_qty,
                 # Chart settings
                 'call_days': self.call_days_var.get() if hasattr(self, 'call_days_var') else '1',
                 'call_timeframe': self.call_timeframe_var.get() if hasattr(self, 'call_timeframe_var') else '1 min',
@@ -1850,6 +2360,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                                                           self.chain_refresh_interval)
                 self.strategy_enabled = settings.get('strategy_enabled', False)
                 
+                # Z-Score Strategy Parameters
+                self.vix_threshold = settings.get('vix_threshold', 30.0)
+                self.z_score_period = settings.get('z_score_period', 20)
+                self.z_score_threshold = settings.get('z_score_threshold', 1.5)
+                self.time_stop_minutes = settings.get('time_stop_minutes', 30)
+                self.trade_qty = settings.get('trade_qty', 1)
+                
                 # Restore chart settings if StringVars exist
                 if hasattr(self, 'call_days_var'):
                     self.call_days_var.set(settings.get('call_days', '1'))
@@ -1863,15 +2380,6 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.log_message("Settings loaded successfully", "SUCCESS")
         except Exception as e:
             self.log_message(f"Error loading settings: {str(e)}", "ERROR")
-    
-    def set_strategy_enabled(self, enabled: bool):
-        """Enable or disable automated strategy"""
-        self.strategy_enabled = enabled
-        self.update_strategy_button_states()
-        self.save_settings()  # Persist the change
-        
-        status = "ENABLED" if enabled else "DISABLED"
-        self.log_message(f"Automated Strategy {status}", "SUCCESS" if enabled else "INFO")
     
     def update_strategy_button_states(self):
         """Update the visual state of strategy ON/OFF buttons"""
@@ -1891,6 +2399,30 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 text="INACTIVE",
                 foreground="#FF0000"
             )
+    
+    def set_strategy_enabled(self, enabled: bool):
+        """Enable or disable the automated Z-Score strategy"""
+        self.strategy_enabled = enabled
+        self.update_strategy_button_states()
+        
+        if enabled:
+            self.log_message("✓ Gamma-Snap Z-Score Strategy ENABLED", "SUCCESS")
+            self.log_message(f"  VIX Threshold: {self.vix_threshold}", "INFO")
+            self.log_message(f"  Z-Score Period: {self.z_score_period} bars", "INFO")
+            self.log_message(f"  Z-Score Threshold: ±{self.z_score_threshold}", "INFO")
+            self.log_message(f"  Time Stop: {self.time_stop_minutes} minutes", "INFO")
+            self.log_message(f"  Trade Quantity: {self.trade_qty} contracts", "INFO")
+        else:
+            self.log_message("✗ Gamma-Snap Z-Score Strategy DISABLED", "WARNING")
+            # If there's an active trade, log warning but don't exit
+            if self.active_trade_info:
+                self.log_message(
+                    "⚠ Warning: Active trade will continue to be monitored for exit conditions",
+                    "WARNING"
+                )
+        
+        # Auto-save settings
+        self.auto_save_settings()
     
     # ========================================================================
     # SPX UNDERLYING PRICE
@@ -1919,11 +2451,60 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Request market data for SPX
         self.reqMktData(self.spx_req_id, spx_contract, "", False, False, [])
         self.log_message(f"Subscribed to SPX underlying price (reqId: {self.spx_req_id})", "INFO")
+        
+        # Subscribe to VIX for strategy filter
+        self.subscribe_vix_price()
+        
+        # Request SPX 1-min historical data for Z-Score strategy
+        self.request_spx_1min_history()
+    
+    def subscribe_vix_price(self):
+        """Subscribe to VIX index for volatility monitoring"""
+        if self.connection_state != ConnectionState.CONNECTED:
+            return
+        
+        vix_contract = Contract()
+        vix_contract.symbol = "VIX"
+        vix_contract.secType = "IND"
+        vix_contract.currency = "USD"
+        vix_contract.exchange = "CBOE"
+        
+        self.reqMktData(self.vix_req_id, vix_contract, "", False, False, [])
+        self.log_message(f"Subscribed to VIX (reqId: {self.vix_req_id})", "INFO")
+    
+    def request_spx_1min_history(self):
+        """Request SPX 1-minute historical data for Z-Score calculation"""
+        if self.connection_state != ConnectionState.CONNECTED:
+            return
+        
+        spx_contract = Contract()
+        spx_contract.symbol = "SPX"
+        spx_contract.secType = "IND"
+        spx_contract.currency = "USD"
+        spx_contract.exchange = "CBOE"
+        
+        # Request 1 day of 1-minute bars (390 bars in a trading day)
+        self.reqHistoricalData(
+            self.spx_1min_req_id,
+            spx_contract,
+            "",  # End date/time (empty = now)
+            "1 D",  # Duration
+            "1 min",  # Bar size
+            "TRADES",  # What to show
+            1,  # Use RTH (Regular Trading Hours)
+            1,  # Format date as string
+            True,  # Keep up to date (streaming)
+            []  # Chart options
+        )
+        self.log_message(f"Requested SPX 1-min history for Z-Score (reqId: {self.spx_1min_req_id})", "INFO")
     
     def update_spx_price_display(self):
         """Update the SPX price display in the GUI"""
         if self.spx_price > 0:
             self.spx_price_label.config(text=f"SPX: {self.spx_price:.2f}")
+            # Also update status bar if it exists
+            if hasattr(self, 'spx_label'):
+                self.spx_label.config(text=f"SPX: {self.spx_price:.2f}")
     
     # ========================================================================
     # OPTION CHAIN MANAGEMENT
@@ -2905,23 +3486,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Place the order via IBKR API
         try:
             self.placeOrder(order_id, contract, order)
-            self.log_message(f"✓ placeOrder() API call completed for order #{order_id}", "SUCCESS")
-            self.log_message(f"⏳ Waiting for TWS callbacks...", "INFO")
-            self.log_message(f"   Expected callbacks:", "INFO")
-            self.log_message(f"   1. orderStatus() with status 'PreSubmitted' or 'Submitted'", "INFO")
-            self.log_message(f"   2. openOrder() with full order details", "INFO")
-            self.log_message(f"   If no callbacks within 3 seconds, check TWS Order Management window", "WARNING")
-            
-            # Schedule a timeout check to see if order was accepted
-            if self.root:
-                def check_order_callback():
-                    if order_id in self.pending_orders:
-                        self.log_message(f"⚠️ WARNING: No callbacks received for order #{order_id} after 3 seconds", "WARNING")
-                        self.log_message(f"   This usually means:", "WARNING")
-                        self.log_message(f"   1. TWS rejected the order silently (check TWS Messages)", "WARNING")
-                        self.log_message(f"   2. Order precautions not bypassed (check TWS API settings)", "WARNING")
-                        self.log_message(f"   3. Contract format issue (check TradingClass)", "WARNING")
-                self.root.after(3000, check_order_callback)
+            self.log_message(f"✓ Order #{order_id} placed successfully", "SUCCESS")
                 
         except Exception as e:
             self.log_message(f"✗ EXCEPTION during placeOrder(): {e}", "ERROR")
@@ -3034,6 +3599,267 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 pos['currentPrice'] = current_price
                 # P&L = (Current - Entry) × Quantity × Multiplier
                 pos['pnl'] = (current_price - pos['avgCost']) * pos['position'] * 100
+    
+    # ========================================================================
+    # Z-SCORE STRATEGY (Gamma-Snap HFS v3.0)
+    # ========================================================================
+    # Automated trading strategy based on SPX mean reversion
+    # Entry: Z-Score crosses threshold (±1.5)
+    # Exit: Price touches 9-EMA (profit target) or time stop (30 min)
+    # ========================================================================
+    
+    def calculate_indicators(self):
+        """Calculate Z-Score and 9-EMA from SPX 1-min bars"""
+        if len(self.spx_1min_bars) < self.z_score_period:
+            return
+        
+        # Convert to DataFrame for easier calculation
+        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.spx_1min_bars]
+        df = pd.DataFrame(bar_data).set_index('time')
+        
+        # 1. Calculate 9-EMA (for Profit Target)
+        self.indicators['ema9'] = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
+        
+        # 2. Calculate Z-Score
+        sma = df['close'].rolling(window=self.z_score_period).mean()
+        std = df['close'].rolling(window=self.z_score_period).std()
+        
+        last_sma = sma.iloc[-1]
+        last_std = std.iloc[-1]
+        last_close = df['close'].iloc[-1]
+        
+        if last_std > 0:
+            self.indicators['z_score'] = (last_close - last_sma) / last_std
+        else:
+            self.indicators['z_score'] = 0.0
+        
+        # Update GUI display if method exists
+        if hasattr(self, 'update_indicator_display'):
+            self.update_indicator_display()
+    
+    def run_gamma_snap_strategy(self):
+        """Main strategy loop - runs every 5 seconds"""
+        # Schedule next run
+        if self.root:
+            self.root.after(5000, self.run_gamma_snap_strategy)
+        
+        # Check if strategy is enabled
+        if not self.strategy_enabled:
+            if hasattr(self, 'strategy_status_var'):
+                self.strategy_status_var.set("Status: INACTIVE")
+            return
+        
+        # Check trading hours (9:30 AM - 3:00 PM ET)
+        now = datetime.now()
+        if not (now.hour >= 9 and now.minute >= 30 and now.hour < 15):
+            if hasattr(self, 'strategy_status_var'):
+                self.strategy_status_var.set("Status: Outside Trading Hours")
+            return
+        
+        # Check VIX filter
+        if self.vix_price > self.vix_threshold:
+            if hasattr(self, 'strategy_status_var'):
+                self.strategy_status_var.set(f"Status: PAUSED (VIX High: {self.vix_price:.2f})")
+            return
+        
+        # Need enough data for Z-Score calculation
+        if len(self.spx_1min_bars) < self.z_score_period + 1:
+            if hasattr(self, 'strategy_status_var'):
+                self.strategy_status_var.set("Status: Waiting for Data...")
+            return
+        
+        # If we're in a trade, check exit conditions
+        if self.active_trade_info:
+            self.check_trade_exit()
+            return
+        
+        # Otherwise, scan for entry signals
+        if hasattr(self, 'strategy_status_var'):
+            self.strategy_status_var.set("Status: SCANNING...")
+        
+        # Get last two Z-Scores for crossover logic
+        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.spx_1min_bars]
+        df = pd.DataFrame(bar_data).set_index('time')
+        sma = df['close'].rolling(window=self.z_score_period).mean()
+        std = df['close'].rolling(window=self.z_score_period).std()
+        z_scores = (df['close'] - sma) / std
+        
+        if len(z_scores) < 2:
+            return
+        
+        last_z_score = z_scores.iloc[-1]
+        prev_z_score = z_scores.iloc[-2]
+        
+        # Long Entry: Z-Score crosses UP from below the threshold
+        if (prev_z_score < -self.z_score_threshold and 
+            last_z_score > -self.z_score_threshold):
+            self.log_message(
+                f"STRATEGY: LONG signal triggered (Z-Score: {last_z_score:.2f})",
+                "SUCCESS"
+            )
+            self.enter_trade('LONG')
+        
+        # Short Entry: Z-Score crosses DOWN from above the threshold
+        elif (prev_z_score > self.z_score_threshold and 
+              last_z_score < self.z_score_threshold):
+            self.log_message(
+                f"STRATEGY: SHORT signal triggered (Z-Score: {last_z_score:.2f})",
+                "SUCCESS"
+            )
+            self.enter_trade('SHORT')
+    
+    def enter_trade(self, direction: str):
+        """Enter a trade based on strategy signal"""
+        # Determine option type and target delta
+        option_type = 'C' if direction == 'LONG' else 'P'
+        target_delta = 0.45 if direction == 'LONG' else -0.45
+        
+        # Find option closest to target delta
+        best_option_key = None
+        min_delta_diff = float('inf')
+        
+        for key, data in self.market_data.items():
+            if data.get('right') == option_type:
+                delta = data.get('delta', 0)
+                if delta != 0:  # Ensure delta is calculated
+                    delta_diff = abs(delta - target_delta)
+                    if delta_diff < min_delta_diff:
+                        min_delta_diff = delta_diff
+                        best_option_key = key
+        
+        if not best_option_key:
+            self.log_message(
+                f"STRATEGY: Could not find suitable {option_type} option",
+                "WARNING"
+            )
+            return
+        
+        # Get option data
+        option_data = self.market_data[best_option_key]
+        
+        # Use mid-price with chasing (same logic as manual trading)
+        limit_price = self.calculate_mid_price(best_option_key)
+        if not limit_price or limit_price <= 0:
+            self.log_message(
+                f"STRATEGY: Invalid mid-price for {best_option_key}",
+                "ERROR"
+            )
+            return
+        
+        # Place the order with mid-price chasing enabled
+        order_id = self.place_order(
+            best_option_key,
+            option_data['contract'],
+            "BUY",
+            self.trade_qty,
+            limit_price,
+            enable_chasing=True  # Enable chasing for better fills
+        )
+        
+        if order_id:
+            self.active_trade_info = {
+                'contract_key': best_option_key,
+                'direction': direction,
+                'entry_time': datetime.now(),
+                'order_id': order_id,
+                'status': 'SUBMITTED',
+                'profit_target_price': self.indicators['ema9'],
+                'entry_price': None,
+                'delta': option_data.get('delta', 0)
+            }
+            if hasattr(self, 'strategy_status_var'):
+                self.strategy_status_var.set(f"Status: IN TRADE ({direction})")
+            
+            self.log_message(
+                f"STRATEGY: Entered {direction} {best_option_key} @ ${limit_price:.2f} "
+                f"(Delta: {option_data.get('delta', 0):.2f})",
+                "SUCCESS"
+            )
+    
+    def check_trade_exit(self):
+        """Check exit conditions for active trade"""
+        trade = self.active_trade_info
+        
+        # Wait for fill confirmation
+        if not trade or trade.get('status') != 'FILLED':
+            return
+        
+        # Get current SPX price
+        current_price = self.spx_price
+        if current_price == 0:
+            return  # Wait for valid price
+        
+        # 1. Profit Target: Price touches the 9-EMA
+        # Recalculate 9-EMA with most recent data
+        self.calculate_indicators()
+        profit_target = self.indicators['ema9']
+        
+        if ((trade['direction'] == 'LONG' and current_price >= profit_target) or
+            (trade['direction'] == 'SHORT' and current_price <= profit_target)):
+            self.log_message(
+                f"STRATEGY: Profit target hit (SPX: ${current_price:.2f}, 9-EMA: ${profit_target:.2f})",
+                "SUCCESS"
+            )
+            self.exit_trade("Profit Target")
+            return
+        
+        # 2. Time Stop
+        time_in_trade = (datetime.now() - trade['entry_time']).total_seconds() / 60
+        if time_in_trade >= self.time_stop_minutes:
+            self.log_message(
+                f"STRATEGY: Time stop triggered ({time_in_trade:.1f} minutes)",
+                "INFO"
+            )
+            self.exit_trade("Time Stop")
+            return
+    
+    def exit_trade(self, reason: str):
+        """Exit the active trade"""
+        trade = self.active_trade_info
+        contract_key = trade['contract_key']
+        
+        # Get market data
+        option_data = self.market_data.get(contract_key)
+        if not option_data:
+            self.log_message(
+                f"STRATEGY: Cannot exit, no market data for {contract_key}",
+                "ERROR"
+            )
+            self.active_trade_info = {}
+            return
+        
+        # Use mid-price with chasing (same logic as manual trading)
+        limit_price = self.calculate_mid_price(contract_key)
+        if limit_price <= 0:
+            self.log_message(
+                f"STRATEGY: Invalid mid-price, using $0.01",
+                "WARNING"
+            )
+            limit_price = 0.01
+        
+        self.log_message(
+            f"STRATEGY: Exiting {contract_key} due to: {reason} @ ${limit_price:.2f}",
+            "INFO"
+        )
+        
+        # Place exit order with mid-price chasing enabled
+        order_id = self.place_order(
+            contract_key,
+            option_data['contract'],
+            "SELL",
+            self.trade_qty,
+            limit_price,
+            enable_chasing=True  # Enable chasing for better fills
+        )
+        
+        if order_id:
+            # Update trade info with exit details
+            trade['exit_order_id'] = order_id
+            trade['exit_reason'] = reason
+            trade['exit_time'] = datetime.now()
+            trade['exit_price'] = limit_price
+            
+            # Trade will be cleared when exit order fills (in orderStatus callback)
     
     # ========================================================================
     # MANUAL TRADING MODE - Implementation
@@ -4087,9 +4913,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Find and update the row
             for i, row in enumerate(data):
                 if row and len(row) > 0 and str(row[0]) == str(order_id):
-                    # If filled/cancelled/submitted/inactive, remove the row (requires set_sheet_data)
+                    # Only remove order when actually filled or cancelled
+                    # "PreSubmitted" and "Submitted" mean order is working, NOT filled!
                     # "Inactive" means rejected (exchange closed, invalid order, etc.)
-                    if status in ["Filled", "Cancelled", "Submitted", "Inactive"]:
+                    if status in ["Filled", "Cancelled", "Inactive"]:
                         data.pop(i)
                         # Update sheet (row count changed)
                         self.order_sheet.set_sheet_data(data)
