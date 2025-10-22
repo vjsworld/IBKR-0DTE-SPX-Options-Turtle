@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter import font as tkfont
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import BOTH, YES, X, Y, LEFT, RIGHT, BOTTOM, TOP, CENTER, END, W, SUNKEN, HORIZONTAL, VERTICAL
+from ttkbootstrap.constants import BOTH, YES, X, Y, LEFT, RIGHT, BOTTOM, TOP, CENTER, END, W, E, EW, SUNKEN, HORIZONTAL, VERTICAL
 from tksheet import Sheet
 import threading
 import queue
@@ -55,6 +55,27 @@ from ibapi.common import TickerId, TickAttrib
 from ibapi.ticktype import TickType
 from scipy.stats import norm
 import math
+
+
+# ============================================================================
+# TRADING SYMBOL CONFIGURATION
+# ============================================================================
+# Change this to switch between SPX (standard) and XSP (mini, 1/10th size)
+# SPX: Full-size contracts (~$410k notional, $100 multiplier)
+# XSP: Mini contracts (~$41k notional, $100 multiplier, 1/10th SPX value)
+# 
+# XSP ADVANTAGES:
+# - 10x more flexible position sizing
+# - Lower capital requirements
+# - Lower commissions ($0.31-$0.60 vs $0.70-$2.51)
+# - Daily expirations (Mon-Fri)
+# - Same 60/40 tax treatment
+#
+# See CBOE_TRADING_REFERENCE.md for full details
+
+TRADING_SYMBOL = "XSP"  # Options: "SPX" or "XSP"
+TRADING_CLASS = "XSP"   # Must match TRADING_SYMBOL
+UNDERLYING_SYMBOL = "XSP"  # For underlying price subscription
 
 
 # ============================================================================
@@ -596,8 +617,8 @@ class IBKRWrapper(EWrapper):
                 # IBKR position callback may not include exchange, so set it explicitly
                 if not contract.exchange:
                     contract.exchange = "SMART"
-                if not contract.tradingClass and contract.symbol == "SPX":
-                    contract.tradingClass = "SPXW"
+                if not contract.tradingClass:
+                    contract.tradingClass = TRADING_CLASS
                 
                 self.app.market_data_map[req_id] = contract_key
                 
@@ -657,9 +678,19 @@ class IBKRWrapper(EWrapper):
                 'low': bar.low,
                 'close': bar.close
             })
-        # Handle chart data for lightweight-charts
-        elif reqId == self.app.chart_hist_req_id:
-            self.app.chart_bar_data.append({
+        # Handle Confirmation chart data (reqId 999995)
+        elif reqId == 999995:
+            self.app.confirm_bar_data.append({
+                'time': bar.date,
+                'open': bar.open,
+                'high': bar.high,
+                'low': bar.low,
+                'close': bar.close,
+                'volume': bar.volume
+            })
+        # Handle Trade chart data (reqId 999994)
+        elif reqId == 999994:
+            self.app.trade_bar_data.append({
                 'time': bar.date,
                 'open': bar.open,
                 'high': bar.high,
@@ -695,15 +726,24 @@ class IBKRWrapper(EWrapper):
                 "SUCCESS"
             )
             self.app.calculate_indicators()
-        # Handle chart data completion
-        elif reqId == self.app.chart_hist_req_id:
+        # Handle Confirmation chart completion (reqId 999995)
+        elif reqId == 999995:
             self.app.log_message(
-                f"Chart historical data received ({len(self.app.chart_bar_data)} bars)",
+                f"Confirmation chart historical data received ({len(self.app.confirm_bar_data)} bars)",
                 "SUCCESS"
             )
-            # Update matplotlib chart
+            # Update confirmation chart
             if hasattr(self.app, 'update_chart_display'):
-                self.app.root.after(100, self.app.update_chart_display)
+                self.app.root.after(100, lambda: self.app.update_chart_display("confirm"))
+        # Handle Trade chart completion (reqId 999994)
+        elif reqId == 999994:
+            self.app.log_message(
+                f"Trade chart historical data received ({len(self.app.trade_bar_data)} bars)",
+                "SUCCESS"
+            )
+            # Update trade chart
+            if hasattr(self.app, 'update_chart_display'):
+                self.app.root.after(100, lambda: self.app.update_chart_display("trade"))
         # Handle option historical data (existing code)
         elif reqId in self.app.historical_data_requests:
             contract_key = self.app.historical_data_requests[reqId]
@@ -756,6 +796,58 @@ class IBKRWrapper(EWrapper):
             })
             # Recalculate indicators with new bar
             self.app.calculate_indicators()
+        # Handle Confirmation chart real-time updates (reqId 999995)
+        elif reqId == 999995:
+            # Update or append the latest bar for Confirmation chart
+            if self.app.confirm_bar_data and self.app.confirm_bar_data[-1]['time'] == bar.date:
+                # Update the last bar (same timestamp)
+                self.app.confirm_bar_data[-1] = {
+                    'time': bar.date,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                }
+            else:
+                # New bar
+                self.app.confirm_bar_data.append({
+                    'time': bar.date,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                })
+            # Update chart display
+            if hasattr(self.app, 'update_chart_display') and self.app.root:
+                self.app.root.after(100, lambda: self.app.update_chart_display("confirm"))
+        # Handle Trade chart real-time updates (reqId 999994)
+        elif reqId == 999994:
+            # Update or append the latest bar for Trade chart
+            if self.app.trade_bar_data and self.app.trade_bar_data[-1]['time'] == bar.date:
+                # Update the last bar (same timestamp)
+                self.app.trade_bar_data[-1] = {
+                    'time': bar.date,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                }
+            else:
+                # New bar
+                self.app.trade_bar_data.append({
+                    'time': bar.date,
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume
+                })
+            # Update chart display
+            if hasattr(self.app, 'update_chart_display') and self.app.root:
+                self.app.root.after(100, lambda: self.app.update_chart_display("trade"))
 
 
 # ============================================================================
@@ -852,6 +944,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.last_trade_hour = -1
         self.active_straddles = []  # List of active straddle positions
         
+        # ========================================================================
+        # STRADDLE STRATEGY (Auto Straddle Entry)
+        # ========================================================================
+        self.straddle_enabled = False  # Separate on/off switch for straddle strategy
+        self.straddle_frequency_minutes = 60  # How often to enter straddles (default: every 60 minutes)
+        self.last_straddle_time = None  # Timestamp of last straddle entry
+        
         # Supertrend data for each position
         self.supertrend_data = {}  # contract_key -> supertrend values
         
@@ -880,6 +979,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.chart_bar_data = []
         self.chart_hist_req_id = 999996
         self.selected_chart_contract = None
+        
+        # Track active chart subscriptions
+        self.confirm_chart_active = False
+        self.trade_chart_active = False
         
         # Queues for thread communication
         self.gui_queue = queue.Queue()
@@ -1019,8 +1122,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Tab 2: Settings
         self.create_settings_tab()
         
-        # Tab 3: SPX Chart
-        self.create_chart_tab()
+        # Tab 3: SPX Chart - NOW EMBEDDED IN TRADING TAB (chart moved to main trading tab)
+        # self.create_chart_tab()  # Disabled - chart now appears below option charts in Trading tab
         
         # Status bar at bottom (inside main_container so it's part of scrollable area)
         self.create_status_bar(main_container)
@@ -1333,45 +1436,60 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         call_chart_container = ttk.Frame(charts_frame)
         call_chart_container.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
         
-        call_chart_header = ttk.Frame(call_chart_container)
-        call_chart_header.pack(fill=X, padx=5, pady=(5, 0))
-        
-        ttk.Label(call_chart_header, text="Call Chart", 
-                 font=("Arial", 12, "bold")).pack(side=LEFT)
-        
-        # Days back selector for calls
-        ttk.Label(call_chart_header, text="Days:").pack(side=RIGHT, padx=(5, 2))
-        self.call_days_var = tk.StringVar(value="1")
-        call_days = ttk.Combobox(call_chart_header, textvariable=self.call_days_var,
-                                 values=["1", "2", "5", "10", "20"],
-                                 width=5, state="readonly")
-        call_days.pack(side=RIGHT, padx=2)
-        call_days.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
-        
-        # Timeframe dropdown for calls
-        ttk.Label(call_chart_header, text="Interval:").pack(side=RIGHT, padx=(5, 2))
-        self.call_timeframe_var = tk.StringVar(value="1 min")
-        call_timeframe = ttk.Combobox(call_chart_header, textvariable=self.call_timeframe_var,
-                                      values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
-                                      width=8, state="readonly")
-        call_timeframe.pack(side=RIGHT, padx=0)
-        call_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
-        
         call_chart_frame = ttk.Frame(call_chart_container)
         call_chart_frame.pack(fill=BOTH, expand=YES, padx=0, pady=0)
         
+        # Create figure and canvas FIRST
         self.call_fig = Figure(figsize=(5, 4), dpi=80, facecolor='#181818')
-        self.call_fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.10)
+        # Extended chart area - more space at bottom now
+        self.call_fig.subplots_adjust(left=0.026, right=0.95, top=0.98, bottom=0.05)
         self.call_ax = self.call_fig.add_subplot(111, facecolor='#202020')
         self.call_ax.tick_params(colors='#E0E0E0', labelsize=8)
         self.call_ax.spines['bottom'].set_color('#FF8C00')
         self.call_ax.spines['top'].set_color('#FF8C00')
         self.call_ax.spines['left'].set_color('#FF8C00')
         self.call_ax.spines['right'].set_color('#FF8C00')
-        self.call_ax.set_title("Select a Call from chain", color='#E0E0E0', fontsize=10)
         
         self.call_canvas = FigureCanvasTkAgg(self.call_fig, master=call_chart_frame)
         self.call_canvas.get_tk_widget().pack(fill=BOTH, expand=YES, padx=0, pady=0)
+        
+        # Custom toolbar frame with chart title and controls AT TOP
+        call_toolbar_frame = ttk.Frame(call_chart_frame, style='Dark.TFrame')
+        call_toolbar_frame.pack(side=tk.TOP, fill=tk.X, before=self.call_canvas.get_tk_widget())
+        
+        # Add navigation toolbar for zoom/pan
+        call_toolbar = NavigationToolbar2Tk(self.call_canvas, call_toolbar_frame)
+        call_toolbar.pack(side=tk.LEFT, fill=tk.X)
+        
+        # Chart title and settings in center/right of toolbar
+        call_controls_frame = ttk.Frame(call_toolbar_frame)
+        call_controls_frame.pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Label(call_controls_frame, text="Call Chart", 
+                 font=("Arial", 10, "bold")).pack(side=LEFT, padx=5)
+        
+        # Interval dropdown
+        ttk.Label(call_controls_frame, text="Interval:").pack(side=LEFT, padx=(10, 2))
+        self.call_timeframe_var = tk.StringVar(value="1 min")
+        call_timeframe = ttk.Combobox(call_controls_frame, textvariable=self.call_timeframe_var,
+                                      values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
+                                      width=8, state="readonly")
+        call_timeframe.pack(side=LEFT, padx=2)
+        call_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
+        
+        # Days back selector
+        ttk.Label(call_controls_frame, text="Days:").pack(side=LEFT, padx=(10, 2))
+        self.call_days_var = tk.StringVar(value="1")
+        call_days = ttk.Combobox(call_controls_frame, textvariable=self.call_days_var,
+                                 values=["1", "2", "5", "10", "20"],
+                                 width=5, state="readonly")
+        call_days.pack(side=LEFT, padx=2)
+        call_days.bind('<<ComboboxSelected>>', lambda e: self.on_call_settings_changed())
+        
+        # Add label for contract description (centered)
+        self.call_contract_label = ttk.Label(call_toolbar_frame, text="", 
+                                             font=("Arial", 9), foreground="#00BFFF")
+        self.call_contract_label.pack(side=tk.LEFT, expand=True)
         
         # Add loading spinner overlay for call chart (initially hidden)
         self.call_loading_frame = tk.Frame(call_chart_frame, bg='#181818')
@@ -1383,54 +1501,64 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.call_loading_label.pack(expand=True)
         self.call_loading_timeout_id = None  # For timeout tracking
         
-        # Add navigation toolbar for zoom/pan
-        call_toolbar = NavigationToolbar2Tk(self.call_canvas, call_chart_frame)
-        call_toolbar.update()
-        call_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
-        
         # Put chart (right side)
         put_chart_container = ttk.Frame(charts_frame)
         put_chart_container.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
         
-        put_chart_header = ttk.Frame(put_chart_container)
-        put_chart_header.pack(fill=X, padx=5, pady=(5, 0))
-        
-        ttk.Label(put_chart_header, text="Put Chart", 
-                 font=("Arial", 12, "bold")).pack(side=LEFT)
-        
-        # Days back selector for puts
-        ttk.Label(put_chart_header, text="Days:").pack(side=RIGHT, padx=(5, 2))
-        self.put_days_var = tk.StringVar(value="5")
-        put_days = ttk.Combobox(put_chart_header, textvariable=self.put_days_var,
-                                values=["1", "2", "5", "10", "20"],
-                                width=5, state="readonly")
-        put_days.pack(side=RIGHT, padx=2)
-        put_days.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
-        
-        # Timeframe dropdown for puts
-        ttk.Label(put_chart_header, text="Interval:").pack(side=RIGHT, padx=(5, 2))
-        self.put_timeframe_var = tk.StringVar(value="1 min")
-        put_timeframe = ttk.Combobox(put_chart_header, textvariable=self.put_timeframe_var,
-                                     values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
-                                     width=8, state="readonly")
-        put_timeframe.pack(side=RIGHT, padx=2)
-        put_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
-        
         put_chart_frame = ttk.Frame(put_chart_container)
         put_chart_frame.pack(fill=BOTH, expand=YES, padx=2, pady=2)
         
+        # Create figure and canvas FIRST
         self.put_fig = Figure(figsize=(5, 4), dpi=80, facecolor='#181818')
-        self.put_fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.10)
+        # Extended chart area - more space at bottom now
+        self.put_fig.subplots_adjust(left=0.026, right=0.95, top=0.98, bottom=0.05)
         self.put_ax = self.put_fig.add_subplot(111, facecolor='#202020')
         self.put_ax.tick_params(colors='#E0E0E0', labelsize=8)
         self.put_ax.spines['bottom'].set_color('#FF8C00')
         self.put_ax.spines['top'].set_color('#FF8C00')
         self.put_ax.spines['left'].set_color('#FF8C00')
         self.put_ax.spines['right'].set_color('#FF8C00')
-        self.put_ax.set_title("Select a Put from chain", color='#E0E0E0', fontsize=10)
         
         self.put_canvas = FigureCanvasTkAgg(self.put_fig, master=put_chart_frame)
         self.put_canvas.get_tk_widget().pack(fill=BOTH, expand=YES, padx=0, pady=0)
+        
+        # Custom toolbar frame with chart title and controls AT TOP
+        put_toolbar_frame = ttk.Frame(put_chart_frame, style='Dark.TFrame')
+        put_toolbar_frame.pack(side=tk.TOP, fill=tk.X, before=self.put_canvas.get_tk_widget())
+        
+        # Add navigation toolbar for zoom/pan
+        put_toolbar = NavigationToolbar2Tk(self.put_canvas, put_toolbar_frame)
+        put_toolbar.pack(side=tk.LEFT, fill=tk.X)
+        
+        # Chart title and settings in center/right of toolbar
+        put_controls_frame = ttk.Frame(put_toolbar_frame)
+        put_controls_frame.pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Label(put_controls_frame, text="Put Chart", 
+                 font=("Arial", 10, "bold")).pack(side=LEFT, padx=5)
+        
+        # Interval dropdown
+        ttk.Label(put_controls_frame, text="Interval:").pack(side=LEFT, padx=(10, 2))
+        self.put_timeframe_var = tk.StringVar(value="1 min")
+        put_timeframe = ttk.Combobox(put_controls_frame, textvariable=self.put_timeframe_var,
+                                     values=["1 min", "5 min", "15 min", "30 min", "1 hour"],
+                                     width=8, state="readonly")
+        put_timeframe.pack(side=LEFT, padx=2)
+        put_timeframe.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
+        
+        # Days back selector
+        ttk.Label(put_controls_frame, text="Days:").pack(side=LEFT, padx=(10, 2))
+        self.put_days_var = tk.StringVar(value="5")
+        put_days = ttk.Combobox(put_controls_frame, textvariable=self.put_days_var,
+                                values=["1", "2", "5", "10", "20"],
+                                width=5, state="readonly")
+        put_days.pack(side=LEFT, padx=2)
+        put_days.bind('<<ComboboxSelected>>', lambda e: self.on_put_settings_changed())
+        
+        # Add label for contract description (centered)
+        self.put_contract_label = ttk.Label(put_toolbar_frame, text="", 
+                                            font=("Arial", 9), foreground="#00BFFF")
+        self.put_contract_label.pack(side=tk.LEFT, expand=True)
         
         # Add loading spinner overlay for put chart (initially hidden)
         self.put_loading_frame = tk.Frame(put_chart_frame, bg='#181818')
@@ -1442,80 +1570,199 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.put_loading_label.pack(expand=True)
         self.put_loading_timeout_id = None  # For timeout tracking
         
-        # Add navigation toolbar for zoom/pan
-        put_toolbar = NavigationToolbar2Tk(self.put_canvas, put_chart_frame)
-        put_toolbar.update()
-        put_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
-        
         # ========================================================================
-        # MANUAL TRADING PANEL - Quick Entry/Exit Controls
+        # SPX UNDERLYING CHARTS - Two Charts Side-by-Side
         # ========================================================================
-        # Provides one-click trading with risk-based position sizing
-        # - Buy button: Enters call option at specified max risk
-        # - Sell button: Enters put option at specified max risk
-        # - Auto-finds closest strike to risk limit without exceeding it
-        # - Orders placed at mid-price with intelligent price chasing
+        # Confirmation Chart (Left - 1 min) | Trade Chart (Right - 15 secs)
         # ========================================================================
         
-        manual_trade_frame = ttk.Frame(bottom_frame)
-        manual_trade_frame.pack(fill=X, padx=5, pady=(10, 5))
+        spx_charts_container = ttk.Frame(bottom_frame)
+        spx_charts_container.pack(fill=BOTH, expand=False, padx=5, pady=(5, 5))
         
-        # Header
-        manual_label = ttk.Label(manual_trade_frame, text="Manual Trading Mode", 
-                                 font=("Arial", 12, "bold"))
-        manual_label.pack(fill=X, pady=(0, 5))
+        # ====================
+        # CONFIRMATION CHART (Left - Longer timeframe)
+        # ====================
+        confirm_chart_container = ttk.Frame(spx_charts_container)
+        confirm_chart_container.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
         
-        # Controls container
-        manual_controls = ttk.Frame(manual_trade_frame)
-        manual_controls.pack(fill=X)
+        confirm_chart_frame = ttk.Frame(confirm_chart_container, height=300)
+        confirm_chart_frame.pack(fill=BOTH, expand=False, padx=0, pady=0)
+        confirm_chart_frame.pack_propagate(False)
         
-        # Left side: Entry buttons
-        entry_frame = ttk.Frame(manual_controls)
-        entry_frame.pack(side=LEFT, padx=(0, 20))
+        # Create figure with 2 subplots for confirmation chart FIRST
+        self.confirm_fig = Figure(figsize=(9, 4.5), dpi=80, facecolor='#000000')
+        gs_confirm = self.confirm_fig.add_gridspec(2, 1, height_ratios=[7, 3], hspace=0.05)
+        self.confirm_ax = self.confirm_fig.add_subplot(gs_confirm[0])
+        self.confirm_zscore_ax = self.confirm_fig.add_subplot(gs_confirm[1], sharex=self.confirm_ax)
         
-        ttk.Label(entry_frame, text="Quick Entry:", 
-                  font=("Arial", 10, "bold")).pack(side=LEFT, padx=(0, 10))
+        # Style confirmation price chart
+        self.confirm_ax.set_facecolor('#000000')
+        self.confirm_ax.tick_params(colors='#808080', which='both', labelsize=8, labelbottom=False)
+        for spine in ['bottom', 'top', 'left', 'right']:
+            self.confirm_ax.spines[spine].set_color('#00BFFF')
+        self.confirm_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
+        self.confirm_ax.set_ylabel('SPX', color='#808080', fontsize=9)
         
-        # Buy Call button (Green)
-        self.buy_button = ttk.Button(entry_frame, text="BUY CALL", 
-                                      command=self.manual_buy_call,
-                                      style='success.TButton', width=12)
-        self.buy_button.pack(side=LEFT, padx=2)
+        # Style confirmation Z-Score
+        self.confirm_zscore_ax.set_facecolor('#000000')
+        self.confirm_zscore_ax.tick_params(colors='#808080', which='both', labelsize=8)
+        for spine in ['bottom', 'top', 'left', 'right']:
+            self.confirm_zscore_ax.spines[spine].set_color('#00BFFF')
+        self.confirm_zscore_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
+        self.confirm_zscore_ax.set_ylabel('Z-Score', color='#808080', fontsize=8)
+        self.confirm_zscore_ax.axhline(y=0, color='#808080', linestyle='--', linewidth=1, alpha=0.5)
+        self.confirm_zscore_ax.axhline(y=1.5, color='#44ff44', linestyle='--', linewidth=1, alpha=0.7)
+        self.confirm_zscore_ax.axhline(y=-1.5, color='#ff4444', linestyle='--', linewidth=1, alpha=0.7)
+        self.confirm_zscore_ax.set_ylim(-3, 3)
         
-        # Sell Put button (Red) - Note: "Sell" means buy a put option
-        self.sell_button = ttk.Button(entry_frame, text="BUY PUT", 
-                                       command=self.manual_buy_put,
-                                       style='danger.TButton', width=12)
-        self.sell_button.pack(side=LEFT, padx=2)
+        # Extended chart area - more space at bottom now
+        self.confirm_fig.subplots_adjust(left=0.026, right=0.95, top=0.98, bottom=0.05, hspace=0.2)
         
-        # Right side: Risk input
-        risk_frame = ttk.Frame(manual_controls)
-        risk_frame.pack(side=LEFT)
+        self.confirm_canvas = FigureCanvasTkAgg(self.confirm_fig, master=confirm_chart_frame)
+        self.confirm_canvas.get_tk_widget().pack(fill=BOTH, expand=YES)
         
-        ttk.Label(risk_frame, text="Max Risk per Contract:", 
-                  font=("Arial", 10)).pack(side=LEFT, padx=(0, 5))
+        # Custom toolbar frame with chart title and controls AT TOP
+        confirm_toolbar_frame = ttk.Frame(confirm_chart_frame, style='Dark.TFrame')
+        confirm_toolbar_frame.pack(side=tk.TOP, fill=tk.X, before=self.confirm_canvas.get_tk_widget())
         
-        self.max_risk_var = tk.StringVar(value="500")
-        self.max_risk_entry = ttk.Entry(risk_frame, textvariable=self.max_risk_var, 
-                                         width=10)
-        self.max_risk_entry.pack(side=LEFT, padx=2)
+        confirm_toolbar = NavigationToolbar2Tk(self.confirm_canvas, confirm_toolbar_frame)
+        confirm_toolbar.update()
+        confirm_toolbar.pack(side=tk.LEFT, fill=tk.X)
         
-        ttk.Label(risk_frame, text="$ (e.g., $500 = $5.00 per contract)", 
-                  font=("Arial", 9), foreground="#888888").pack(side=LEFT, padx=5)
+        # Chart title and settings in center/right of toolbar
+        confirm_controls_frame = ttk.Frame(confirm_toolbar_frame)
+        confirm_controls_frame.pack(side=tk.RIGHT, padx=5)
         
-        # Row 3: Log section (now expandable to fill remaining space)
-        log_label = ttk.Label(bottom_frame, text="Activity Log", 
-                             font=("Arial", 12, "bold"))
-        log_label.pack(fill=X, padx=5, pady=(5, 0))
+        ttk.Label(confirm_controls_frame, text="Confirmation Chart", 
+                 font=("Arial", 10, "bold"), foreground="#00BFFF").pack(side=LEFT, padx=5)
         
-        log_frame = ttk.Frame(bottom_frame)
-        log_frame.pack(fill=BOTH, expand=True, padx=5, pady=5)  # Changed to expand=True
+        # Timeframe selector
+        ttk.Label(confirm_controls_frame, text="Interval:").pack(side=tk.LEFT, padx=(10, 2))
+        self.confirm_timeframe_var = tk.StringVar(value="1 min")
+        confirm_timeframe = ttk.Combobox(confirm_controls_frame, textvariable=self.confirm_timeframe_var,
+                                        values=["30 secs", "1 min", "2 mins", "3 mins", "5 mins"],
+                                        width=8, state="readonly")
+        confirm_timeframe.pack(side=LEFT, padx=2)
+        
+        # Period selector
+        ttk.Label(confirm_controls_frame, text="Period:").pack(side=tk.LEFT, padx=(10, 2))
+        self.confirm_period_var = tk.StringVar(value="1 D")
+        confirm_period = ttk.Combobox(confirm_controls_frame, textvariable=self.confirm_period_var,
+                                     values=["1 D", "2 D", "5 D"],
+                                     width=5, state="readonly")
+        confirm_period.pack(side=LEFT, padx=2)
+        
+        # ====================
+        # TRADE CHART (Right - Shorter timeframe for trading)
+        # ====================
+        trade_chart_container = ttk.Frame(spx_charts_container)
+        trade_chart_container.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
+        
+        trade_chart_frame = ttk.Frame(trade_chart_container, height=300)
+        trade_chart_frame.pack(fill=BOTH, expand=False, padx=0, pady=0)
+        trade_chart_frame.pack_propagate(False)
+        
+        # Create figure with 2 subplots for trade chart FIRST
+        self.trade_fig = Figure(figsize=(9, 4.5), dpi=80, facecolor='#000000')
+        gs_trade = self.trade_fig.add_gridspec(2, 1, height_ratios=[7, 3], hspace=0.05)
+        self.trade_ax = self.trade_fig.add_subplot(gs_trade[0])
+        self.trade_zscore_ax = self.trade_fig.add_subplot(gs_trade[1], sharex=self.trade_ax)
+        
+        # Style trade price chart
+        self.trade_ax.set_facecolor('#000000')
+        self.trade_ax.tick_params(colors='#808080', which='both', labelsize=8, labelbottom=False)
+        for spine in ['bottom', 'top', 'left', 'right']:
+            self.trade_ax.spines[spine].set_color('#00FF00')
+        self.trade_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
+        self.trade_ax.set_ylabel('SPX', color='#808080', fontsize=9)
+        
+        # Style trade Z-Score
+        self.trade_zscore_ax.set_facecolor('#000000')
+        self.trade_zscore_ax.tick_params(colors='#808080', which='both', labelsize=8)
+        for spine in ['bottom', 'top', 'left', 'right']:
+            self.trade_zscore_ax.spines[spine].set_color('#00FF00')
+        self.trade_zscore_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
+        self.trade_zscore_ax.set_ylabel('Z-Score', color='#808080', fontsize=8)
+        self.trade_zscore_ax.axhline(y=0, color='#808080', linestyle='--', linewidth=1, alpha=0.5)
+        self.trade_zscore_ax.axhline(y=1.5, color='#44ff44', linestyle='--', linewidth=1, alpha=0.7)
+        self.trade_zscore_ax.axhline(y=-1.5, color='#ff4444', linestyle='--', linewidth=1, alpha=0.7)
+        self.trade_zscore_ax.set_ylim(-3, 3)
+        
+        # Extended chart area - more space at bottom now
+        self.trade_fig.subplots_adjust(left=0.026, right=0.95, top=0.98, bottom=0.05, hspace=0.2)
+        
+        self.trade_canvas = FigureCanvasTkAgg(self.trade_fig, master=trade_chart_frame)
+        self.trade_canvas.get_tk_widget().pack(fill=BOTH, expand=YES)
+        
+        # Custom toolbar frame with chart title and controls AT TOP
+        trade_toolbar_frame = ttk.Frame(trade_chart_frame, style='Dark.TFrame')
+        trade_toolbar_frame.pack(side=tk.TOP, fill=tk.X, before=self.trade_canvas.get_tk_widget())
+        
+        trade_toolbar = NavigationToolbar2Tk(self.trade_canvas, trade_toolbar_frame)
+        trade_toolbar.pack(side=tk.LEFT, fill=tk.X)
+        
+        # Chart title and settings in center/right of toolbar
+        trade_controls_frame = ttk.Frame(trade_toolbar_frame)
+        trade_controls_frame.pack(side=tk.RIGHT, padx=5)
+        
+        ttk.Label(trade_controls_frame, text="Trade Chart (Executes Here)", 
+                 font=("Arial", 10, "bold"), foreground="#00FF00").pack(side=LEFT, padx=5)
+        
+        # Timeframe selector  
+        ttk.Label(trade_controls_frame, text="Interval:").pack(side=LEFT, padx=(10, 2))
+        self.trade_timeframe_var = tk.StringVar(value="15 secs")
+        trade_timeframe = ttk.Combobox(trade_controls_frame, textvariable=self.trade_timeframe_var,
+                                      values=["1 secs", "5 secs", "10 secs", "15 secs", "30 secs", "1 min"],
+                                      width=8, state="readonly")
+        trade_timeframe.pack(side=LEFT, padx=2)
+        
+        # Period selector
+        ttk.Label(trade_controls_frame, text="Period:").pack(side=LEFT, padx=(10, 2))
+        self.trade_period_var = tk.StringVar(value="1 D")
+        trade_period = ttk.Combobox(trade_controls_frame, textvariable=self.trade_period_var,
+                                   values=["1 D", "2 D", "5 D"],
+                                   width=5, state="readonly")
+        trade_period.pack(side=LEFT, padx=2)
+        
+        # Initialize chart data containers
+        self.confirm_bar_data = []
+        self.trade_bar_data = []
+        self.chart_trade_markers = []
+        
+        self.log_message("SPX dual-chart system created - Confirmation + Trade charts", "INFO")
+        
+        # ========================================================================
+        # BOTTOM PANELS - 5-Column Horizontal Layout
+        # ========================================================================
+        # Five-panel layout across the bottom:
+        # Column 1: Activity Log (expandable)
+        # Column 2: Strategy Parameters
+        # Column 3: Gamma-Snap Strategy
+        # Column 4: [Reserved - Blank for future use]
+        # Column 5: Manual Mode (Quick Entry controls)
+        # ========================================================================
+        
+        bottom_panels_frame = ttk.Frame(bottom_frame)
+        bottom_panels_frame.pack(fill=BOTH, expand=True, padx=5, pady=(10, 5))
+        
+        # ========================================================================
+        # COLUMN 1: Activity Log
+        # ========================================================================
+        activity_log_container = ttk.Frame(bottom_panels_frame)
+        activity_log_container.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 3))
+        
+        log_label = ttk.Label(activity_log_container, text="Activity Log", 
+                             font=("Arial", 11, "bold"))
+        log_label.pack(fill=X, pady=(0, 3))
+        
+        log_frame = ttk.Frame(activity_log_container)
+        log_frame.pack(fill=BOTH, expand=True)
         
         log_vsb = ttk.Scrollbar(log_frame, orient="vertical")
         log_vsb.pack(side=RIGHT, fill=Y)
         
-        self.log_text = tk.Text(log_frame, height=10, bg='#202020',  # Increased from 8 to 10
-                               fg='#E0E0E0', font=("Consolas", 9),
+        self.log_text = tk.Text(log_frame, height=12, bg='#202020',
+                               fg='#E0E0E0', font=("Consolas", 8),
                                yscrollcommand=log_vsb.set, wrap=tk.WORD)
         log_vsb.config(command=self.log_text.yview)
         self.log_text.pack(fill=BOTH, expand=YES)
@@ -1525,6 +1772,362 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_text.tag_config("WARNING", foreground="#FFA500")
         self.log_text.tag_config("SUCCESS", foreground="#44FF44")
         self.log_text.tag_config("INFO", foreground="#E0E0E0")
+        
+        # ========================================================================
+        # COLUMN 2: Chain Settings
+        # ========================================================================
+        strategy_params_container = ttk.Frame(bottom_panels_frame, width=180)
+        strategy_params_container.pack(side=LEFT, fill=BOTH, expand=False, padx=3)
+        strategy_params_container.pack_propagate(False)  # Maintain fixed width
+        
+        ttk.Label(strategy_params_container, text="Chain Settings", 
+                 font=("Arial", 11, "bold")).pack(fill=X, pady=(0, 3))
+        
+        strategy_section = ttk.LabelFrame(strategy_params_container, text="Parameters", padding=5)
+        strategy_section.pack(fill=BOTH, expand=True)
+        
+        # Strikes Above
+        ttk.Label(strategy_section, text="Strikes +:", 
+                  font=("Arial", 8)).grid(row=0, column=0, sticky=W, pady=1, padx=2)
+        self.strikes_above_entry = ttk.Entry(strategy_section, width=8, font=("Arial", 8))
+        self.strikes_above_entry.insert(0, str(self.strikes_above))
+        self.strikes_above_entry.grid(row=0, column=1, sticky=EW, padx=2, pady=1)
+        self.strikes_above_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.strikes_above_entry.bind('<Return>', self.auto_save_settings)
+        strategy_section.columnconfigure(1, weight=1)
+        
+        # Strikes Below
+        ttk.Label(strategy_section, text="Strikes -:", 
+                  font=("Arial", 8)).grid(row=1, column=0, sticky=W, pady=1, padx=2)
+        self.strikes_below_entry = ttk.Entry(strategy_section, width=8, font=("Arial", 8))
+        self.strikes_below_entry.insert(0, str(self.strikes_below))
+        self.strikes_below_entry.grid(row=1, column=1, sticky=EW, padx=2, pady=1)
+        self.strikes_below_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.strikes_below_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Chain Refresh
+        ttk.Label(strategy_section, text="Refresh (s):", 
+                  font=("Arial", 8)).grid(row=2, column=0, sticky=W, pady=1, padx=2)
+        self.chain_refresh_entry = ttk.Entry(strategy_section, width=8, font=("Arial", 8))
+        self.chain_refresh_entry.insert(0, str(self.chain_refresh_interval))
+        self.chain_refresh_entry.grid(row=2, column=1, sticky=EW, padx=2, pady=1)
+        self.chain_refresh_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.chain_refresh_entry.bind('<Return>', self.auto_save_settings)
+        
+        # ========================================================================
+        # COLUMN 3: Gamma-Snap Strategy (WIDER for Dual Settings)
+        # ========================================================================
+        gamma_strategy_container = ttk.Frame(bottom_panels_frame, width=400)
+        gamma_strategy_container.pack(side=LEFT, fill=BOTH, expand=False, padx=3)
+        gamma_strategy_container.pack_propagate(False)  # Maintain fixed width
+        
+        ttk.Label(gamma_strategy_container, text="Strategy Settings", 
+                 font=("Arial", 11, "bold")).pack(fill=X, pady=(0, 3))
+        
+        # Create two-column layout for Confirmation vs Trade Chart settings
+        settings_columns = ttk.Frame(gamma_strategy_container)
+        settings_columns.pack(fill=BOTH, expand=True)
+        
+        # LEFT COLUMN: Confirmation Chart Settings
+        confirm_settings = ttk.LabelFrame(settings_columns, text="Confirmation Settings", padding=5)
+        confirm_settings.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
+        
+        ttk.Label(confirm_settings, text="EMA Len:", 
+                  font=("Arial", 8)).grid(row=0, column=0, sticky=W, pady=1, padx=2)
+        self.confirm_ema_entry = ttk.Entry(confirm_settings, width=6, font=("Arial", 8))
+        self.confirm_ema_entry.insert(0, "9")
+        self.confirm_ema_entry.grid(row=0, column=1, sticky=EW, padx=2, pady=1)
+        self.confirm_ema_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.confirm_ema_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Label(confirm_settings, text="Z Period:", 
+                  font=("Arial", 8)).grid(row=1, column=0, sticky=W, pady=1, padx=2)
+        self.confirm_z_period_entry = ttk.Entry(confirm_settings, width=6, font=("Arial", 8))
+        self.confirm_z_period_entry.insert(0, "30")
+        self.confirm_z_period_entry.grid(row=1, column=1, sticky=EW, padx=2, pady=1)
+        self.confirm_z_period_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.confirm_z_period_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Label(confirm_settings, text="Z ±:", 
+                  font=("Arial", 8)).grid(row=2, column=0, sticky=W, pady=1, padx=2)
+        self.confirm_z_threshold_entry = ttk.Entry(confirm_settings, width=6, font=("Arial", 8))
+        self.confirm_z_threshold_entry.insert(0, "1.5")
+        self.confirm_z_threshold_entry.grid(row=2, column=1, sticky=EW, padx=2, pady=1)
+        self.confirm_z_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.confirm_z_threshold_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Button(confirm_settings, text="Refresh", 
+                  command=self.refresh_confirm_chart,
+                  style="info.TButton", width=10).grid(row=3, column=0, columnspan=2, pady=5)
+        
+        confirm_settings.columnconfigure(1, weight=1)
+        
+        # RIGHT COLUMN: Trade Chart Settings
+        trade_settings = ttk.LabelFrame(settings_columns, text="Trade Chart Settings", padding=5)
+        trade_settings.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
+        
+        ttk.Label(trade_settings, text="EMA Len:", 
+                  font=("Arial", 8)).grid(row=0, column=0, sticky=W, pady=1, padx=2)
+        self.trade_ema_entry = ttk.Entry(trade_settings, width=6, font=("Arial", 8))
+        self.trade_ema_entry.insert(0, "9")
+        self.trade_ema_entry.grid(row=0, column=1, sticky=EW, padx=2, pady=1)
+        self.trade_ema_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.trade_ema_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Label(trade_settings, text="Z Period:", 
+                  font=("Arial", 8)).grid(row=1, column=0, sticky=W, pady=1, padx=2)
+        self.trade_z_period_entry = ttk.Entry(trade_settings, width=6, font=("Arial", 8))
+        self.trade_z_period_entry.insert(0, "30")
+        self.trade_z_period_entry.grid(row=1, column=1, sticky=EW, padx=2, pady=1)
+        self.trade_z_period_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.trade_z_period_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Label(trade_settings, text="Z ±:", 
+                  font=("Arial", 8)).grid(row=2, column=0, sticky=W, pady=1, padx=2)
+        self.trade_z_threshold_entry = ttk.Entry(trade_settings, width=6, font=("Arial", 8))
+        self.trade_z_threshold_entry.insert(0, "1.5")
+        self.trade_z_threshold_entry.grid(row=2, column=1, sticky=EW, padx=2, pady=1)
+        self.trade_z_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.trade_z_threshold_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Button(trade_settings, text="Refresh", 
+                  command=self.refresh_trade_chart,
+                  style="info.TButton", width=10).grid(row=3, column=0, columnspan=2, pady=5)
+        
+        trade_settings.columnconfigure(1, weight=1)
+        
+        # ========================================================================
+        # COLUMN 4: Master Settings (WIDER - 2 columns of settings)
+        # ========================================================================
+        master_container = ttk.Frame(bottom_panels_frame, width=300)  # Wider to fit 2 columns
+        master_container.pack(side=LEFT, fill=BOTH, expand=False, padx=3)
+        master_container.pack_propagate(False)  # Maintain fixed width
+        
+        ttk.Label(master_container, text="Master Settings", 
+                 font=("Arial", 11, "bold")).pack(fill=X, pady=(0, 3))
+        
+        master_section = ttk.LabelFrame(master_container, text="Strategy Control", padding=5)
+        master_section.pack(fill=BOTH, expand=True)
+        
+        # Use grid for everything in master_section - 4 columns layout
+        # COLUMN 1 & 2: Left side | COLUMN 3 & 4: Right side
+        
+        # Row 0: Strategy Status (ON/OFF buttons at top) - spans all columns
+        ttk.Label(master_section, text="Auto:", 
+                  font=("Arial", 9, "bold")).grid(row=0, column=0, sticky=W, padx=2, pady=2)
+        
+        button_frame = ttk.Frame(master_section)
+        button_frame.grid(row=0, column=1, columnspan=3, sticky=EW, pady=2)
+        
+        self.strategy_on_btn = ttk.Button(
+            button_frame, 
+            text="ON", 
+            command=lambda: self.set_strategy_enabled(True),
+            width=4,
+            style='success.TButton'
+        )
+        self.strategy_on_btn.pack(side=LEFT, padx=1)
+        
+        self.strategy_off_btn = ttk.Button(
+            button_frame, 
+            text="OFF", 
+            command=lambda: self.set_strategy_enabled(False),
+            width=4,
+            style='danger.TButton'
+        )
+        self.strategy_off_btn.pack(side=LEFT, padx=1)
+        
+        self.strategy_status_label = ttk.Label(
+            button_frame, 
+            text="OFF", 
+            font=("Arial", 8, "bold"),
+            foreground="#808080"
+        )
+        self.strategy_status_label.pack(side=LEFT, padx=2)
+        
+        # === LEFT COLUMN (Columns 0-1) ===
+        
+        # Row 1: VIX Threshold
+        ttk.Label(master_section, text="VIX Thresh:", 
+                  font=("Arial", 8)).grid(row=1, column=0, sticky=W, pady=2, padx=2)
+        self.vix_threshold_entry = ttk.Entry(master_section, width=6, font=("Arial", 8))
+        self.vix_threshold_entry.insert(0, "20")
+        self.vix_threshold_entry.grid(row=1, column=1, sticky=EW, padx=2, pady=2)
+        self.vix_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.vix_threshold_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Row 2: Time Stop
+        ttk.Label(master_section, text="Time Stop:", 
+                  font=("Arial", 8)).grid(row=2, column=0, sticky=W, pady=2, padx=2)
+        self.time_stop_entry = ttk.Entry(master_section, width=6, font=("Arial", 8))
+        self.time_stop_entry.insert(0, "60")
+        self.time_stop_entry.grid(row=2, column=1, sticky=EW, padx=2, pady=2)
+        self.time_stop_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.time_stop_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Row 3: Target Delta
+        ttk.Label(master_section, text="Target Δ:", 
+                  font=("Arial", 8)).grid(row=3, column=0, sticky=W, pady=2, padx=2)
+        self.target_delta_entry = ttk.Entry(master_section, width=6, font=("Arial", 8))
+        self.target_delta_entry.insert(0, "30")
+        self.target_delta_entry.grid(row=3, column=1, sticky=EW, padx=2, pady=2)
+        self.target_delta_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.target_delta_entry.bind('<Return>', self.auto_save_settings)
+        
+        # === RIGHT COLUMN (Columns 2-3) ===
+        
+        # Row 1: Max Risk
+        ttk.Label(master_section, text="Max Risk:", 
+                  font=("Arial", 8)).grid(row=1, column=2, sticky=W, pady=2, padx=(10, 2))
+        risk_entry_frame = ttk.Frame(master_section)
+        risk_entry_frame.grid(row=1, column=3, sticky=EW, padx=2, pady=2)
+        ttk.Label(risk_entry_frame, text="$", font=("Arial", 8)).pack(side=LEFT)
+        self.max_risk_entry = ttk.Entry(risk_entry_frame, width=6, font=("Arial", 8))
+        self.max_risk_entry.insert(0, "500")
+        self.max_risk_entry.pack(side=LEFT, fill=X, expand=True)
+        self.max_risk_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.max_risk_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Row 2: Trade Quantity
+        ttk.Label(master_section, text="Trade Qty:", 
+                  font=("Arial", 8)).grid(row=2, column=2, sticky=W, pady=2, padx=(10, 2))
+        self.trade_qty_entry = ttk.Entry(master_section, width=6, font=("Arial", 8))
+        self.trade_qty_entry.insert(0, "1")
+        self.trade_qty_entry.grid(row=2, column=3, sticky=EW, padx=2, pady=2)
+        self.trade_qty_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.trade_qty_entry.bind('<Return>', self.auto_save_settings)
+        
+        # Row 3: Position Size Mode (Radio buttons)
+        ttk.Label(master_section, text="Pos. Size:", 
+                  font=("Arial", 8, "bold")).grid(row=3, column=2, sticky=W, pady=2, padx=(10, 2))
+        
+        self.position_size_mode = tk.StringVar(value="fixed")  # "fixed" or "calculated"
+        
+        radio_frame = ttk.Frame(master_section)
+        radio_frame.grid(row=3, column=3, sticky=W, padx=2)
+        
+        ttk.Radiobutton(radio_frame, text="Fixed", variable=self.position_size_mode, 
+                       value="fixed", command=self.on_position_mode_change).pack(anchor=W, pady=1)
+        ttk.Radiobutton(radio_frame, text="By Risk", variable=self.position_size_mode, 
+                       value="calculated", command=self.on_position_mode_change).pack(anchor=W, pady=1)
+        
+        # Configure column weights
+        master_section.columnconfigure(1, weight=1)
+        master_section.columnconfigure(3, weight=1)
+        
+        # Initialize button states
+        self.update_strategy_button_states()
+        
+        # ========================================================================
+        # COLUMN 5: Straddle Strategy
+        # ========================================================================
+        straddle_container = ttk.Frame(bottom_panels_frame, width=180)
+        straddle_container.pack(side=LEFT, fill=BOTH, expand=False, padx=3)
+        straddle_container.pack_propagate(False)  # Maintain fixed width
+        
+        ttk.Label(straddle_container, text="Straddle Strategy", 
+                 font=("Arial", 11, "bold")).pack(fill=X, pady=(0, 3))
+        
+        straddle_section = ttk.LabelFrame(straddle_container, text="Auto Entry", padding=5)
+        straddle_section.pack(fill=BOTH, expand=True)
+        
+        # Enable/Disable buttons
+        ttk.Label(straddle_section, text="Straddle:", 
+                  font=("Arial", 9, "bold")).grid(row=0, column=0, sticky=W, padx=2, pady=2)
+        
+        straddle_button_frame = ttk.Frame(straddle_section)
+        straddle_button_frame.grid(row=0, column=1, sticky=EW, pady=2)
+        
+        self.straddle_on_btn = ttk.Button(
+            straddle_button_frame, 
+            text="ON", 
+            command=lambda: self.set_straddle_enabled(True),
+            width=4,
+            style='success.TButton'
+        )
+        self.straddle_on_btn.pack(side=LEFT, padx=1)
+        
+        self.straddle_off_btn = ttk.Button(
+            straddle_button_frame, 
+            text="OFF", 
+            command=lambda: self.set_straddle_enabled(False),
+            width=4,
+            style='danger.TButton'
+        )
+        self.straddle_off_btn.pack(side=LEFT, padx=1)
+        
+        self.straddle_status_label = ttk.Label(
+            straddle_button_frame, 
+            text="OFF", 
+            font=("Arial", 8, "bold"),
+            foreground="#808080"
+        )
+        self.straddle_status_label.pack(side=LEFT, padx=2)
+        
+        # Frequency setting
+        ttk.Label(straddle_section, text="Frequency:", 
+                  font=("Arial", 8)).grid(row=1, column=0, sticky=W, pady=2, padx=2)
+        
+        freq_frame = ttk.Frame(straddle_section)
+        freq_frame.grid(row=1, column=1, sticky=EW, padx=2, pady=2)
+        
+        self.straddle_frequency_entry = ttk.Entry(freq_frame, width=6, font=("Arial", 8))
+        self.straddle_frequency_entry.insert(0, "60")
+        self.straddle_frequency_entry.pack(side=LEFT, fill=X, expand=True)
+        self.straddle_frequency_entry.bind('<FocusOut>', self.auto_save_settings)
+        self.straddle_frequency_entry.bind('<Return>', self.auto_save_settings)
+        
+        ttk.Label(freq_frame, text=" min", font=("Arial", 8)).pack(side=LEFT)
+        
+        # Info text
+        ttk.Label(straddle_section, text="Uses Master Settings\nfor Delta & Position Size", 
+                  font=("Arial", 7), foreground="#888888", 
+                  justify=LEFT).grid(row=2, column=0, columnspan=2, sticky=W, padx=2, pady=(5, 0))
+        
+        # Status display
+        self.straddle_next_label = ttk.Label(
+            straddle_section, 
+            text="Next: --:--", 
+            font=("Arial", 7),
+            foreground="#00BFFF"
+        )
+        self.straddle_next_label.grid(row=3, column=0, columnspan=2, sticky=W, padx=2, pady=(2, 0))
+        
+        straddle_section.columnconfigure(1, weight=1)
+        
+        # Initialize button states
+        self.update_straddle_button_states()
+        
+        # ========================================================================
+        # COLUMN 6: Manual Mode
+        # ========================================================================
+        manual_mode_container = ttk.Frame(bottom_panels_frame, width=180)
+        manual_mode_container.pack(side=LEFT, fill=BOTH, expand=False, padx=(3, 0))
+        manual_mode_container.pack_propagate(False)  # Maintain fixed width
+        
+        # Header
+        ttk.Label(manual_mode_container, text="Manual Mode", 
+                 font=("Arial", 11, "bold")).pack(fill=X, pady=(0, 3))
+        
+        # Manual Trading Controls
+        manual_section = ttk.LabelFrame(manual_mode_container, text="Quick Entry", padding=5)
+        manual_section.pack(fill=BOTH, expand=True)
+        
+        # Buy Call button (Green)
+        self.buy_button = ttk.Button(manual_section, text="BUY CALL", 
+                                      command=self.manual_buy_call,
+                                      style='success.TButton', width=12)
+        self.buy_button.pack(fill=X, pady=2)
+        
+        # Buy Put button (Red)
+        self.sell_button = ttk.Button(manual_section, text="BUY PUT", 
+                                       command=self.manual_buy_put,
+                                       style='danger.TButton', width=12)
+        self.sell_button.pack(fill=X, pady=2)
+        
+        # Info label
+        ttk.Label(manual_section, text="Settings in Master panel →", 
+                  font=("Arial", 8), foreground="#888888").pack(anchor=W, pady=(8, 0), padx=2)
         
         # Initialize chart tracking variables
         self.selected_call_contract = None
@@ -1581,135 +2184,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.client_entry.bind('<Return>', self.auto_save_settings)
         
         # Strategy Settings Section
-        strategy_frame = ttk.LabelFrame(scrollable_frame, text="Strategy Parameters",
-                                       padding=20)
-        strategy_frame.pack(fill=X, padx=20, pady=10)
-        
-        ttk.Label(strategy_frame, text="ATR Period:").grid(row=0, column=0, 
-                                                           sticky=W, pady=5)
-        self.atr_entry = ttk.Entry(strategy_frame, width=30)
-        self.atr_entry.insert(0, str(self.atr_period))
-        self.atr_entry.grid(row=0, column=1, sticky=W, padx=10, pady=5)
-        self.atr_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.atr_entry.bind('<Return>', self.auto_save_settings)
-        
-        ttk.Label(strategy_frame, text="Chandelier Exit Multiplier:").grid(
-            row=1, column=0, sticky=W, pady=5)
-        self.chandelier_entry = ttk.Entry(strategy_frame, width=30)
-        self.chandelier_entry.insert(0, str(self.chandelier_multiplier))
-        self.chandelier_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
-        self.chandelier_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.chandelier_entry.bind('<Return>', self.auto_save_settings)
-        
-        ttk.Label(strategy_frame, text="Strikes Above SPX:").grid(
-            row=2, column=0, sticky=W, pady=5)
-        self.strikes_above_entry = ttk.Entry(strategy_frame, width=30)
-        self.strikes_above_entry.insert(0, str(self.strikes_above))
-        self.strikes_above_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
-        self.strikes_above_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.strikes_above_entry.bind('<Return>', self.auto_save_settings)
-        
-        ttk.Label(strategy_frame, text="Strikes Below SPX:").grid(
-            row=3, column=0, sticky=W, pady=5)
-        self.strikes_below_entry = ttk.Entry(strategy_frame, width=30)
-        self.strikes_below_entry.insert(0, str(self.strikes_below))
-        self.strikes_below_entry.grid(row=3, column=1, sticky=W, padx=10, pady=5)
-        self.strikes_below_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.strikes_below_entry.bind('<Return>', self.auto_save_settings)
-        
-        ttk.Label(strategy_frame, text="Chain Refresh Interval (seconds):").grid(
-            row=4, column=0, sticky=W, pady=5)
-        self.chain_refresh_entry = ttk.Entry(strategy_frame, width=30)
-        self.chain_refresh_entry.insert(0, str(self.chain_refresh_interval))
-        self.chain_refresh_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
-        self.chain_refresh_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.chain_refresh_entry.bind('<Return>', self.auto_save_settings)
-        
-        # Gamma-Snap Strategy Settings Section
-        gamma_frame = ttk.LabelFrame(scrollable_frame, text="Gamma-Snap Z-Score Strategy",
-                                     padding=20)
-        gamma_frame.pack(fill=X, padx=20, pady=10)
-        
-        # Strategy Automation Control
-        ttk.Label(gamma_frame, text="Strategy Automation:").grid(
-            row=0, column=0, sticky=W, pady=15)
-        
-        automation_frame = ttk.Frame(gamma_frame)
-        automation_frame.grid(row=0, column=1, sticky=W, padx=10, pady=15)
-        
-        # Create ON/OFF buttons with visual feedback
-        self.strategy_on_btn = ttk.Button(
-            automation_frame, 
-            text="ON", 
-            command=lambda: self.set_strategy_enabled(True),
-            width=8
-        )
-        self.strategy_on_btn.pack(side=LEFT, padx=5)
-        
-        self.strategy_off_btn = ttk.Button(
-            automation_frame, 
-            text="OFF", 
-            command=lambda: self.set_strategy_enabled(False),
-            width=8
-        )
-        self.strategy_off_btn.pack(side=LEFT, padx=5)
-        
-        # Status label
-        self.strategy_status_label = ttk.Label(
-            automation_frame, 
-            text="INACTIVE", 
-            font=("Arial", 10, "bold"),
-            foreground="#808080"
-        )
-        self.strategy_status_label.pack(side=LEFT, padx=10)
-        
-        # Initialize button states
-        self.update_strategy_button_states()
-        
-        # VIX Threshold
-        ttk.Label(gamma_frame, text="VIX Threshold (pause if >):").grid(
-            row=1, column=0, sticky=W, pady=5)
-        self.vix_threshold_entry = ttk.Entry(gamma_frame, width=30)
-        self.vix_threshold_entry.insert(0, str(self.vix_threshold))
-        self.vix_threshold_entry.grid(row=1, column=1, sticky=W, padx=10, pady=5)
-        self.vix_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.vix_threshold_entry.bind('<Return>', self.auto_save_settings)
-        
-        # Z-Score Period
-        ttk.Label(gamma_frame, text="Z-Score Period (bars):").grid(
-            row=2, column=0, sticky=W, pady=5)
-        self.z_score_period_entry = ttk.Entry(gamma_frame, width=30)
-        self.z_score_period_entry.insert(0, str(self.z_score_period))
-        self.z_score_period_entry.grid(row=2, column=1, sticky=W, padx=10, pady=5)
-        self.z_score_period_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.z_score_period_entry.bind('<Return>', self.auto_save_settings)
-        
-        # Z-Score Threshold
-        ttk.Label(gamma_frame, text="Z-Score Threshold (±):").grid(
-            row=3, column=0, sticky=W, pady=5)
-        self.z_score_threshold_entry = ttk.Entry(gamma_frame, width=30)
-        self.z_score_threshold_entry.insert(0, str(self.z_score_threshold))
-        self.z_score_threshold_entry.grid(row=3, column=1, sticky=W, padx=10, pady=5)
-        self.z_score_threshold_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.z_score_threshold_entry.bind('<Return>', self.auto_save_settings)
-        
-        # Time Stop
-        ttk.Label(gamma_frame, text="Time Stop (minutes):").grid(
-            row=4, column=0, sticky=W, pady=5)
-        self.time_stop_entry = ttk.Entry(gamma_frame, width=30)
-        self.time_stop_entry.insert(0, str(self.time_stop_minutes))
-        self.time_stop_entry.grid(row=4, column=1, sticky=W, padx=10, pady=5)
-        self.time_stop_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.time_stop_entry.bind('<Return>', self.auto_save_settings)
-        
-        # Trade Quantity
-        ttk.Label(gamma_frame, text="Trade Quantity (contracts):").grid(
-            row=5, column=0, sticky=W, pady=5)
-        self.trade_qty_entry = ttk.Entry(gamma_frame, width=30)
-        self.trade_qty_entry.insert(0, str(self.trade_qty))
-        self.trade_qty_entry.grid(row=5, column=1, sticky=W, padx=10, pady=5)
-        self.trade_qty_entry.bind('<FocusOut>', self.auto_save_settings)
-        self.trade_qty_entry.bind('<Return>', self.auto_save_settings)
+        # NOTE: Strategy Parameters and Gamma-Snap Strategy sections (including Trade Quantity)
+        # have been moved to the main Trading tab (Manual Mode panel) for easier access.
+        # All strategy settings are now directly accessible without switching tabs.
         
         # Buttons
         button_frame = ttk.Frame(scrollable_frame)
@@ -1779,71 +2256,175 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         self.log_message("Chart tab created - ready for data", "INFO")
     
-    def request_chart_data(self):
-        """Request SPX historical data for chart display"""
+    def refresh_confirm_chart(self):
+        """Refresh confirmation chart with current settings"""
         if self.connection_state != ConnectionState.CONNECTED:
-            self.log_message("Cannot request chart data - not connected", "WARNING")
+            self.log_message("Cannot refresh chart - not connected", "WARNING")
             return
         
-        # Create SPX index contract
+        # Cancel existing subscription first to avoid duplicate ticker ID error
+        if self.confirm_chart_active:
+            try:
+                self.log_message("Canceling existing Confirmation chart subscription...", "INFO")
+                self.cancelHistoricalData(999995)
+                self.confirm_chart_active = False
+                # Small delay to ensure cancellation is processed
+                import time
+                time.sleep(0.1)
+            except Exception as e:
+                self.log_message(f"Error canceling Confirmation chart: {str(e)}", "WARNING")
+        
+        # Create contract for underlying index
         spx_contract = Contract()
-        spx_contract.symbol = "SPX"
+        spx_contract.symbol = UNDERLYING_SYMBOL
         spx_contract.secType = "IND"
         spx_contract.currency = "USD"
         spx_contract.exchange = "CBOE"
         
         # Clear existing data
-        self.chart_bar_data.clear()
-        self.chart_candlestick_data.clear()
+        self.confirm_bar_data.clear()
         
-        # Get period and timeframe from UI
-        period = self.chart_period_var.get()
-        timeframe = self.chart_timeframe_var.get()
+        # Get settings
+        period = self.confirm_period_var.get()
+        timeframe = self.confirm_timeframe_var.get()
         
-        self.chart_status_label.config(text=f"Loading {period} {timeframe} data...", foreground="#FFA500")
-        
-        # Request historical data
-        self.reqHistoricalData(
-            self.chart_hist_req_id,
-            spx_contract,
-            "",  # End date (empty = now)
-            period,  # Duration (1 D, 2 D, 5 D)
-            timeframe,  # Bar size
-            "TRADES",  # What to show (TRADES, MIDPOINT, BID, ASK)
-            1,  # Use RTH (Regular Trading Hours)
-            1,  # Format date (1 = yyyymmdd hh:mm:ss)
-            False,  # Keep up to date
-            []  # Chart options
-        )
-        
-        self.log_message(f"Requested {period} {timeframe} SPX chart data (reqId: {self.chart_hist_req_id})", "INFO")
+        # Request historical data with streaming enabled
+        try:
+            self.reqHistoricalData(
+                999995,  # Unique ID for confirmation chart
+                spx_contract,
+                "",
+                period,
+                timeframe,
+                "TRADES",
+                1,
+                1,
+                True,  # keepUpToDate=True for real-time streaming
+                []
+            )
+            
+            # Mark as active only after successful request
+            self.confirm_chart_active = True
+            self.log_message(f"✓ Confirmation chart refreshed: {period} {timeframe} (streaming)", "SUCCESS")
+        except Exception as e:
+            self.log_message(f"Error requesting Confirmation chart: {str(e)}", "ERROR")
     
-    def update_chart_display(self):
-        """Update the matplotlib chart with candlestick data and indicators"""
-        if not self.chart_bar_data:
-            self.log_message("No chart data to display", "WARNING")
+    def refresh_trade_chart(self):
+        """Refresh trade chart with current settings"""
+        if self.connection_state != ConnectionState.CONNECTED:
+            self.log_message("Cannot refresh chart - not connected", "WARNING")
+            return
+        
+        # Cancel existing subscription first to avoid duplicate ticker ID error
+        if self.trade_chart_active:
+            try:
+                self.log_message("Canceling existing Trade chart subscription...", "INFO")
+                self.cancelHistoricalData(999994)
+                self.trade_chart_active = False
+                # Small delay to ensure cancellation is processed
+                import time
+                time.sleep(0.1)
+            except Exception as e:
+                self.log_message(f"Error canceling Trade chart: {str(e)}", "WARNING")
+        
+        # Create contract for underlying index
+        spx_contract = Contract()
+        spx_contract.symbol = UNDERLYING_SYMBOL
+        spx_contract.secType = "IND"
+        spx_contract.currency = "USD"
+        spx_contract.exchange = "CBOE"
+        
+        # Clear existing data
+        self.trade_bar_data.clear()
+        
+        # Get settings
+        period = self.trade_period_var.get()
+        timeframe = self.trade_timeframe_var.get()
+        
+        # Request historical data with streaming enabled
+        try:
+            self.reqHistoricalData(
+                999994,  # Unique ID for trade chart
+                spx_contract,
+                "",
+                period,
+                timeframe,
+                "TRADES",
+                1,
+                1,
+                True,  # keepUpToDate=True for real-time streaming
+                []
+            )
+            
+            # Mark as active only after successful request
+            self.trade_chart_active = True
+            self.log_message(f"✓ Trade chart refreshed: {period} {timeframe} (streaming)", "SUCCESS")
+        except Exception as e:
+            self.log_message(f"Error requesting Trade chart: {str(e)}", "ERROR")
+    
+    def request_chart_data(self):
+        """Request SPX historical data for BOTH charts (legacy function - calls both refresh functions)"""
+        self.refresh_confirm_chart()
+        self.refresh_trade_chart()
+    
+    def update_chart_display(self, chart_type="confirm"):
+        """Update the matplotlib chart with candlestick data, indicators, and Z-Score
+        
+        Args:
+            chart_type: 'confirm' or 'trade' to specify which chart to update
+        """
+        # Select the appropriate data and chart objects
+        if chart_type == "confirm":
+            bar_data = self.confirm_bar_data
+            price_ax = self.confirm_ax
+            zscore_ax = self.confirm_zscore_ax
+            canvas = self.confirm_canvas
+            ema_length = int(self.confirm_ema_entry.get() or "9")
+            z_period = int(self.confirm_z_period_entry.get() or "30")
+            z_threshold = float(self.confirm_z_threshold_entry.get() or "1.5")
+            chart_name = "Confirmation"
+            chart_title = f"SPX Confirmation Chart ({ema_length}-EMA, Z-Period={z_period})"
+        else:  # trade
+            bar_data = self.trade_bar_data
+            price_ax = self.trade_ax
+            zscore_ax = self.trade_zscore_ax
+            canvas = self.trade_canvas
+            ema_length = int(self.trade_ema_entry.get() or "9")
+            z_period = int(self.trade_z_period_entry.get() or "30")
+            z_threshold = float(self.trade_z_threshold_entry.get() or "1.5")
+            chart_name = "Trade"
+            chart_title = f"SPX Trade Chart ({ema_length}-EMA, Z-Period={z_period})"
+        
+        if not bar_data:
+            self.log_message(f"No {chart_name} chart data to display", "WARNING")
             return
         
         # Convert bar data to DataFrame
-        df = pd.DataFrame(self.chart_bar_data)
+        df = pd.DataFrame(bar_data)
         
         # Parse time strings to datetime
         if isinstance(df['time'].iloc[0], str):
             df['time'] = pd.to_datetime(df['time'], format='%Y%m%d  %H:%M:%S')
         
-        # Calculate 9-EMA
-        df['ema9'] = df['close'].ewm(span=9, adjust=False).mean()
+        # Calculate EMA with configurable length
+        df['ema'] = df['close'].ewm(span=ema_length, adjust=False).mean()
         
-        # Calculate Bollinger Bands (optional - using Z-Score period)
-        sma = df['close'].rolling(window=self.z_score_period).mean()
-        std = df['close'].rolling(window=self.z_score_period).std()
+        # Calculate Z-Score with configurable period
+        sma = df['close'].rolling(window=z_period).mean()
+        std = df['close'].rolling(window=z_period).std()
+        df['z_score'] = (df['close'] - sma) / std
         df['bb_upper'] = sma + (std * 2)
         df['bb_lower'] = sma - (std * 2)
         
-        # Clear previous chart
-        self.chart_ax.clear()
+        # Clear previous charts
+        price_ax.clear()
+        zscore_ax.clear()
         
-        # Plot candlesticks manually (matplotlib doesn't have built-in candlestick for newer versions)
+        # ========================================================================
+        # PRICE CHART (Top Subplot)
+        # ========================================================================
+        
+        # Plot candlesticks manually
         for i, (idx, row) in enumerate(df.iterrows()):
             color = '#26a69a' if row['close'] >= row['open'] else '#ef5350'  # Green up, red down
             
@@ -1851,99 +2432,149 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             body_height = abs(row['close'] - row['open'])
             body_bottom = min(row['open'], row['close'])
             
-            self.chart_ax.add_patch(Rectangle(
+            price_ax.add_patch(Rectangle(
                 (i, body_bottom), 0.8, body_height,
                 facecolor=color, edgecolor=color, linewidth=0
             ))
             
             # Draw the wicks
-            self.chart_ax.plot([i + 0.4, i + 0.4], [row['low'], row['high']], 
-                             color=color, linewidth=1)
+            price_ax.plot([i + 0.4, i + 0.4], [row['low'], row['high']], 
+                         color=color, linewidth=1)
         
-        # Plot 9-EMA (profit target line)
-        self.chart_ax.plot(range(len(df)), df['ema9'], color='#FF8C00', linewidth=2, 
-                          label='9-EMA (Profit Target)', alpha=0.9)
+        # Plot EMA (with dynamic label showing actual length)
+        price_ax.plot(range(len(df)), df['ema'], color='#FF8C00', linewidth=2, 
+                     label=f'{ema_length}-EMA', alpha=0.9)
         
         # Plot Bollinger Bands
-        self.chart_ax.plot(range(len(df)), df['bb_upper'], color='#2962FF', linewidth=1, 
-                          label=f'BB Upper ({self.z_score_period})', alpha=0.5, linestyle='--')
-        self.chart_ax.plot(range(len(df)), df['bb_lower'], color='#2962FF', linewidth=1, 
-                          label=f'BB Lower ({self.z_score_period})', alpha=0.5, linestyle='--')
+        price_ax.plot(range(len(df)), df['bb_upper'], color='#2962FF', linewidth=1, 
+                     label='BB Upper', alpha=0.5, linestyle='--')
+        price_ax.plot(range(len(df)), df['bb_lower'], color='#2962FF', linewidth=1, 
+                     label='BB Lower', alpha=0.5, linestyle='--')
         
-        # Add trade markers
-        for trade in self.trade_history:
-            try:
-                # Find closest bar to entry time
-                if 'entry_time' in trade:
-                    time_diffs = (df['time'] - trade['entry_time']).abs()
-                    entry_idx = time_diffs.idxmin()
-                    entry_loc = df.index.get_loc(entry_idx)
-                    # get_loc can return int, slice, or array - we only want int
-                    if isinstance(entry_loc, int):
-                        entry_position = entry_loc
-                    else:
-                        continue  # Skip if not a single integer location
+        # Add trade markers (ONLY on Trade chart)
+        if chart_type == "trade":
+            for trade in self.trade_history:
+                try:
+                    if 'entry_time' in trade:
+                        time_diffs = (df['time'] - trade['entry_time']).abs()
+                        entry_idx = time_diffs.idxmin()
+                        entry_loc = df.index.get_loc(entry_idx)
+                        if isinstance(entry_loc, int):
+                            entry_position = entry_loc
+                            entry_price = trade.get('entry_price', 0)
+                            if entry_price > 0:
+                                price_ax.scatter(entry_position, entry_price, marker='v', s=200, 
+                                               color='#2196F3', zorder=5)
+                                price_ax.text(entry_position, entry_price, f" ${entry_price:.2f}", 
+                                            color='#2196F3', fontsize=8, va='top')
                     
-                    entry_price = trade.get('entry_price', 0)
-                    if entry_price > 0:
-                        # Entry marker (blue arrow down)
-                        self.chart_ax.scatter(entry_position, entry_price, marker='v', s=200, 
-                                            color='#2196F3', zorder=5, label='Entry' if len(self.trade_history) == 1 else '')
-                        self.chart_ax.text(entry_position, entry_price, f" ${entry_price:.2f}", 
-                                         color='#2196F3', fontsize=8, va='top')
-                
-                # Exit marker
-                if 'exit_time' in trade and trade.get('exit_time'):
-                    time_diffs = (df['time'] - trade['exit_time']).abs()
-                    exit_idx = time_diffs.idxmin()
-                    exit_loc = df.index.get_loc(exit_idx)
-                    # get_loc can return int, slice, or array - we only want int
-                    if isinstance(exit_loc, int):
-                        exit_position = exit_loc
-                    else:
-                        continue  # Skip if not a single integer location
-                    
-                    exit_price = trade.get('exit_price_final', 0)
-                    if exit_price > 0:
-                        # Exit marker (orange arrow up)
-                        pnl = trade.get('pnl', 0)
-                        marker_color = '#00FF00' if pnl > 0 else '#FF0000'
-                        self.chart_ax.scatter(exit_position, exit_price, marker='^', s=200, 
-                                            color=marker_color, zorder=5, label='Exit' if len(self.trade_history) == 1 else '')
-                        self.chart_ax.text(exit_position, exit_price, f" ${exit_price:.2f}\nP&L: ${pnl:.0f}", 
-                                         color=marker_color, fontsize=8, va='bottom')
-            except Exception as e:
-                # Skip trade markers if there's any issue finding the position
-                self.log_message(f"Could not place trade marker: {e}", "WARNING")
-                continue
+                    if 'exit_time' in trade and trade.get('exit_time'):
+                        time_diffs = (df['time'] - trade['exit_time']).abs()
+                        exit_idx = time_diffs.idxmin()
+                        exit_loc = df.index.get_loc(exit_idx)
+                        if isinstance(exit_loc, int):
+                            exit_position = exit_loc
+                            exit_price = trade.get('exit_price_final', 0)
+                            if exit_price > 0:
+                                pnl = trade.get('pnl', 0)
+                                marker_color = '#00FF00' if pnl > 0 else '#FF0000'
+                                price_ax.scatter(exit_position, exit_price, marker='^', s=200, 
+                                               color=marker_color, zorder=5)
+                                price_ax.text(exit_position, exit_price, f" ${exit_price:.2f}\n${pnl:.0f}", 
+                                            color=marker_color, fontsize=8, va='bottom')
+                except Exception as e:
+                    continue
         
-        # Chart styling
-        self.chart_ax.set_facecolor('#000000')
-        self.chart_ax.tick_params(colors='#808080', which='both')
-        self.chart_ax.spines['bottom'].set_color('#3a3a3a')
-        self.chart_ax.spines['top'].set_color('#3a3a3a')
-        self.chart_ax.spines['left'].set_color('#3a3a3a')
-        self.chart_ax.spines['right'].set_color('#3a3a3a')
-        self.chart_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5)
+        # Price chart styling
+        price_ax.set_facecolor('#000000')
+        price_ax.tick_params(colors='#808080', which='both', labelsize=8, labelbottom=False)
+        price_ax.spines['bottom'].set_color('#3a3a3a')
+        price_ax.spines['top'].set_color('#3a3a3a')
+        price_ax.spines['left'].set_color('#3a3a3a')
+        price_ax.spines['right'].set_color('#3a3a3a')
+        price_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
         
-        # Labels
-        self.chart_ax.set_xlabel('Time', color='#808080', fontsize=10)
-        self.chart_ax.set_ylabel('SPX Price', color='#808080', fontsize=10)
-        self.chart_ax.set_title('SPX Index Chart with Strategy Signals', 
-                               color='#C0C0C0', fontsize=12, fontweight='bold')
+        # Move Y-axis to the right
+        price_ax.yaxis.tick_right()
+        price_ax.yaxis.set_label_position("right")
+        price_ax.set_ylabel('SPX Price', color='#808080', fontsize=9)
+        price_ax.set_title(chart_title, color='#C0C0C0', fontsize=11, fontweight='bold', pad=5)
         
-        # Legend
-        if df['ema9'].notna().any():
-            legend = self.chart_ax.legend(loc='upper left', facecolor='#1a1a1a', 
-                                        edgecolor='#3a3a3a', framealpha=0.9)
+        # Add current price label on Y-axis (bold and highlighted)
+        if not df.empty:
+            current_price = df['close'].iloc[-1]
+            price_ax.axhline(y=current_price, color='#00FF00', linestyle='--', linewidth=1, alpha=0.3)
+            price_ax.text(len(df) + 0.5, current_price, f' ${current_price:.2f} ', 
+                         fontsize=9, fontweight='bold', color='#00FF00',
+                         bbox=dict(boxstyle='round,pad=0.3', facecolor='#000000', 
+                                  edgecolor='#00FF00', linewidth=1.5),
+                         verticalalignment='center', horizontalalignment='left')
+        
+        # Legend for price chart
+        if df['ema'].notna().any():
+            legend = price_ax.legend(loc='upper left', facecolor='#1a1a1a', 
+                                    edgecolor='#3a3a3a', framealpha=0.9, fontsize=8)
             for text in legend.get_texts():
                 text.set_color('#C0C0C0')
         
-        # Refresh canvas
-        self.chart_canvas.draw()
+        # ========================================================================
+        # Z-SCORE INDICATOR (Bottom Subplot)
+        # ========================================================================
         
-        self.chart_status_label.config(text=f"Chart: {len(df)} bars loaded", foreground="#00FF00")
-        self.log_message(f"Chart updated with {len(df)} bars", "SUCCESS")
+        # Plot Z-Score line
+        z_score_array = df['z_score'].to_numpy()
+        zscore_ax.plot(range(len(df)), z_score_array, color='#00BFFF', linewidth=2, 
+                      label='Z-Score', alpha=0.9)
+        
+        # Fill areas for visual clarity
+        zscore_ax.fill_between(range(len(df)), 0, z_score_array, 
+                              where=(z_score_array > 0), color='#44ff44', alpha=0.2)  # type: ignore
+        zscore_ax.fill_between(range(len(df)), 0, z_score_array, 
+                              where=(z_score_array < 0), color='#ff4444', alpha=0.2)  # type: ignore
+        
+        # Entry signal lines (use configurable threshold)
+        zscore_ax.axhline(y=0, color='#808080', linestyle='-', linewidth=1, alpha=0.5)
+        zscore_ax.axhline(y=z_threshold, color='#44ff44', linestyle='--', linewidth=1.5, 
+                         alpha=0.8, label=f'Buy Signal (+{z_threshold})')
+        zscore_ax.axhline(y=-z_threshold, color='#ff4444', linestyle='--', linewidth=1.5, 
+                         alpha=0.8, label=f'Sell Signal (-{z_threshold})')
+        
+        # Z-Score chart styling
+        zscore_ax.set_facecolor('#000000')
+        zscore_ax.tick_params(colors='#808080', which='both', labelsize=8)
+        zscore_ax.spines['bottom'].set_color('#3a3a3a')
+        zscore_ax.spines['top'].set_color('#3a3a3a')
+        zscore_ax.spines['left'].set_color('#3a3a3a')
+        zscore_ax.spines['right'].set_color('#3a3a3a')
+        zscore_ax.grid(True, color='#1a1a1a', linestyle='-', linewidth=0.5, alpha=0.3)
+        
+        # Move Y-axis to the right
+        zscore_ax.yaxis.tick_right()
+        zscore_ax.yaxis.set_label_position("right")
+        zscore_ax.set_ylabel('Z-Score', color='#808080', fontsize=9)
+        zscore_ax.set_xlabel('Time', color='#808080', fontsize=9)
+        zscore_ax.set_ylim(-3, 3)
+        
+        # Add current Z-Score label on Y-axis (bold and highlighted)
+        if not df.empty and not df['z_score'].isna().iloc[-1]:
+            current_zscore = df['z_score'].iloc[-1]
+            zscore_color = '#44ff44' if current_zscore > 0 else '#ff4444' if current_zscore < 0 else '#808080'
+            zscore_ax.text(len(df) + 0.5, current_zscore, f' {current_zscore:.2f} ', 
+                          fontsize=9, fontweight='bold', color=zscore_color,
+                          bbox=dict(boxstyle='round,pad=0.3', facecolor='#000000', 
+                                   edgecolor=zscore_color, linewidth=1.5),
+                          verticalalignment='center', horizontalalignment='left')
+        
+        # Legend for Z-Score
+        z_legend = zscore_ax.legend(loc='upper left', facecolor='#1a1a1a', 
+                                   edgecolor='#3a3a3a', framealpha=0.9, fontsize=8)
+        for text in z_legend.get_texts():
+            text.set_color('#C0C0C0')
+        
+        # Refresh canvas
+        canvas.draw()
+        
+        # Chart updated successfully (logging removed to reduce spam)
     
     def create_status_bar(self, parent):
         """Create status bar at bottom of window (now inside scrollable container)"""
@@ -2141,6 +2772,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.connection_state = ConnectionState.DISCONNECTED
         self.data_server_ok = False  # Reset data server flag on disconnect
         self.client_id_iterator = 1  # Reset client ID iterator for next connection
+        
+        # Reset chart subscription flags
+        self.confirm_chart_active = False
+        self.trade_chart_active = False
+        
         self.status_label.config(text="Status: Disconnected")
         self.connect_btn.config(text="Connect", state=tk.NORMAL)
         self.log_message("Disconnected from IBKR successfully", "INFO")
@@ -2216,6 +2852,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message("Requesting SPX option chain for 0DTE...", "INFO")
         self.request_option_chain()
         
+        # Request SPX chart data with indicators
+        self.log_message("Requesting SPX chart data with indicators...", "INFO")
+        self.request_chart_data()
+        
         # If we're reconnecting, resubscribe to previously subscribed contracts
         if self.subscribed_contracts:
             self.log_message(f"Reconnection detected - resubscribing to {len(self.subscribed_contracts)} contracts...", "INFO")
@@ -2239,16 +2879,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.host = self.host_entry.get()
             self.port = int(self.port_entry.get())
             self.client_id = int(self.client_entry.get())
-            self.atr_period = int(self.atr_entry.get())
-            self.chandelier_multiplier = float(self.chandelier_entry.get())
             self.strikes_above = int(self.strikes_above_entry.get())
             self.strikes_below = int(self.strikes_below_entry.get())
             self.chain_refresh_interval = int(self.chain_refresh_entry.get())
             
-            # Z-Score strategy parameters
+            # Master Settings (strategy parameters)
             self.vix_threshold = float(self.vix_threshold_entry.get())
-            self.z_score_period = int(self.z_score_period_entry.get())
-            self.z_score_threshold = float(self.z_score_threshold_entry.get())
             self.time_stop_minutes = int(self.time_stop_entry.get())
             self.trade_qty = int(self.trade_qty_entry.get())
             
@@ -2256,23 +2892,33 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'host': self.host,
                 'port': self.port,
                 'client_id': self.client_id,
-                'atr_period': self.atr_period,
-                'chandelier_multiplier': self.chandelier_multiplier,
                 'strikes_above': self.strikes_above,
                 'strikes_below': self.strikes_below,
                 'chain_refresh_interval': self.chain_refresh_interval,
                 'strategy_enabled': self.strategy_enabled,
-                # Z-Score Strategy Parameters
+                # Master Settings
                 'vix_threshold': self.vix_threshold,
-                'z_score_period': self.z_score_period,
-                'z_score_threshold': self.z_score_threshold,
                 'time_stop_minutes': self.time_stop_minutes,
                 'trade_qty': self.trade_qty,
-                # Chart settings
+                # Straddle Strategy
+                'straddle_enabled': self.straddle_enabled,
+                'straddle_frequency_minutes': int(self.straddle_frequency_entry.get() or "60"),
+                # Dual Chart Settings
+                'confirm_ema': int(self.confirm_ema_entry.get() or "9"),
+                'confirm_z_period': int(self.confirm_z_period_entry.get() or "30"),
+                'confirm_z_threshold': float(self.confirm_z_threshold_entry.get() or "1.5"),
+                'trade_ema': int(self.trade_ema_entry.get() or "9"),
+                'trade_z_period': int(self.trade_z_period_entry.get() or "30"),
+                'trade_z_threshold': float(self.trade_z_threshold_entry.get() or "1.5"),
+                # Chart period/timeframe settings
                 'call_days': self.call_days_var.get(),
                 'call_timeframe': self.call_timeframe_var.get(),
                 'put_days': self.put_days_var.get(),
-                'put_timeframe': self.put_timeframe_var.get()
+                'put_timeframe': self.put_timeframe_var.get(),
+                'confirm_period': self.confirm_period_var.get(),
+                'confirm_timeframe': self.confirm_timeframe_var.get(),
+                'trade_period': self.trade_period_var.get(),
+                'trade_timeframe': self.trade_timeframe_var.get()
             }
             
             with open('settings.json', 'w') as f:
@@ -2293,19 +2939,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.host = self.host_entry.get()
                 self.port = int(self.port_entry.get())
                 self.client_id = int(self.client_entry.get())
-                self.atr_period = int(self.atr_entry.get())
-                self.chandelier_multiplier = float(self.chandelier_entry.get())
                 self.strikes_above = int(self.strikes_above_entry.get())
                 self.strikes_below = int(self.strikes_below_entry.get())
                 self.chain_refresh_interval = int(self.chain_refresh_entry.get())
                 
-                # Z-Score strategy parameters (with fallback)
+                # Master Settings (strategy parameters)
                 if hasattr(self, 'vix_threshold_entry'):
                     self.vix_threshold = float(self.vix_threshold_entry.get())
-                    self.z_score_period = int(self.z_score_period_entry.get())
-                    self.z_score_threshold = float(self.z_score_threshold_entry.get())
                     self.time_stop_minutes = int(self.time_stop_entry.get())
                     self.trade_qty = int(self.trade_qty_entry.get())
+                    self.target_delta = float(self.target_delta_entry.get())
+                    self.max_risk = float(self.max_risk_entry.get())
+                    self.position_size_mode_value = self.position_size_mode.get()
             except (ValueError, AttributeError):
                 # Skip save if validation fails (user still typing)
                 return
@@ -2314,23 +2959,36 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 'host': self.host,
                 'port': self.port,
                 'client_id': self.client_id,
-                'atr_period': self.atr_period,
-                'chandelier_multiplier': self.chandelier_multiplier,
                 'strikes_above': self.strikes_above,
                 'strikes_below': self.strikes_below,
                 'chain_refresh_interval': self.chain_refresh_interval,
                 'strategy_enabled': self.strategy_enabled,
-                # Z-Score Strategy Parameters
-                'vix_threshold': self.vix_threshold,
-                'z_score_period': self.z_score_period,
-                'z_score_threshold': self.z_score_threshold,
-                'time_stop_minutes': self.time_stop_minutes,
-                'trade_qty': self.trade_qty,
+                # Master Settings
+                'vix_threshold': getattr(self, 'vix_threshold', 30.0),
+                'time_stop_minutes': getattr(self, 'time_stop_minutes', 60),
+                'trade_qty': getattr(self, 'trade_qty', 1),
+                'target_delta': getattr(self, 'target_delta', 30.0),
+                'max_risk': getattr(self, 'max_risk', 500.0),
+                'position_size_mode': getattr(self, 'position_size_mode_value', 'fixed'),
+                # Straddle Strategy
+                'straddle_enabled': getattr(self, 'straddle_enabled', False),
+                'straddle_frequency_minutes': int(self.straddle_frequency_entry.get() or "60") if hasattr(self, 'straddle_frequency_entry') else 60,
+                # Dual Chart Settings
+                'confirm_ema': int(self.confirm_ema_entry.get() or "9"),
+                'confirm_z_period': int(self.confirm_z_period_entry.get() or "30"),
+                'confirm_z_threshold': float(self.confirm_z_threshold_entry.get() or "1.5"),
+                'trade_ema': int(self.trade_ema_entry.get() or "9"),
+                'trade_z_period': int(self.trade_z_period_entry.get() or "30"),
+                'trade_z_threshold': float(self.trade_z_threshold_entry.get() or "1.5"),
                 # Chart settings
                 'call_days': self.call_days_var.get() if hasattr(self, 'call_days_var') else '1',
                 'call_timeframe': self.call_timeframe_var.get() if hasattr(self, 'call_timeframe_var') else '1 min',
                 'put_days': self.put_days_var.get() if hasattr(self, 'put_days_var') else '5',
-                'put_timeframe': self.put_timeframe_var.get() if hasattr(self, 'put_timeframe_var') else '1 min'
+                'put_timeframe': self.put_timeframe_var.get() if hasattr(self, 'put_timeframe_var') else '1 min',
+                'confirm_period': self.confirm_period_var.get() if hasattr(self, 'confirm_period_var') else '1 D',
+                'confirm_timeframe': self.confirm_timeframe_var.get() if hasattr(self, 'confirm_timeframe_var') else '1 min',
+                'trade_period': self.trade_period_var.get() if hasattr(self, 'trade_period_var') else '1 D',
+                'trade_timeframe': self.trade_timeframe_var.get() if hasattr(self, 'trade_timeframe_var') else '15 secs'
             }
             
             with open('settings.json', 'w') as f:
@@ -2366,6 +3024,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.z_score_threshold = settings.get('z_score_threshold', 1.5)
                 self.time_stop_minutes = settings.get('time_stop_minutes', 30)
                 self.trade_qty = settings.get('trade_qty', 1)
+                self.target_delta = settings.get('target_delta', 30.0)
+                self.max_risk = settings.get('max_risk', 500.0)
+                
+                # Position size mode
+                if hasattr(self, 'position_size_mode'):
+                    self.position_size_mode.set(settings.get('position_size_mode', 'fixed'))
+                
+                # Straddle Strategy Parameters
+                self.straddle_enabled = settings.get('straddle_enabled', False)
+                self.straddle_frequency_minutes = settings.get('straddle_frequency_minutes', 60)
                 
                 # Restore chart settings if StringVars exist
                 if hasattr(self, 'call_days_var'):
@@ -2377,7 +3045,39 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 if hasattr(self, 'put_timeframe_var'):
                     self.put_timeframe_var.set(settings.get('put_timeframe', '1 min'))
                 
-                self.log_message("Settings loaded successfully", "SUCCESS")
+                # Restore Confirmation Chart Z-Score settings
+                if hasattr(self, 'confirm_ema_entry'):
+                    self.confirm_ema_entry.delete(0, 'end')
+                    self.confirm_ema_entry.insert(0, str(settings.get('confirm_ema', 9)))
+                if hasattr(self, 'confirm_z_period_entry'):
+                    self.confirm_z_period_entry.delete(0, 'end')
+                    self.confirm_z_period_entry.insert(0, str(settings.get('confirm_z_period', 30)))
+                if hasattr(self, 'confirm_z_threshold_entry'):
+                    self.confirm_z_threshold_entry.delete(0, 'end')
+                    self.confirm_z_threshold_entry.insert(0, str(settings.get('confirm_z_threshold', 1.5)))
+                
+                # Restore Trade Chart Z-Score settings  
+                if hasattr(self, 'trade_ema_entry'):
+                    self.trade_ema_entry.delete(0, 'end')
+                    self.trade_ema_entry.insert(0, str(settings.get('trade_ema', 20)))
+                if hasattr(self, 'trade_z_period_entry'):
+                    self.trade_z_period_entry.delete(0, 'end')
+                    self.trade_z_period_entry.insert(0, str(settings.get('trade_z_period', 100)))
+                if hasattr(self, 'trade_z_threshold_entry'):
+                    self.trade_z_threshold_entry.delete(0, 'end')
+                    self.trade_z_threshold_entry.insert(0, str(settings.get('trade_z_threshold', 1.5)))
+                
+                # Restore period/timeframe variables
+                if hasattr(self, 'confirm_period_var'):
+                    self.confirm_period_var.set(settings.get('confirm_period', '1 D'))
+                if hasattr(self, 'confirm_timeframe_var'):
+                    self.confirm_timeframe_var.set(settings.get('confirm_timeframe', '1 min'))
+                if hasattr(self, 'trade_period_var'):
+                    self.trade_period_var.set(settings.get('trade_period', '1 D'))
+                if hasattr(self, 'trade_timeframe_var'):
+                    self.trade_timeframe_var.set(settings.get('trade_timeframe', '15 secs'))
+                
+                self.log_message("✓ Settings loaded successfully", "SUCCESS")
         except Exception as e:
             self.log_message(f"Error loading settings: {str(e)}", "ERROR")
     
@@ -2406,20 +3106,146 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.update_strategy_button_states()
         
         if enabled:
-            self.log_message("✓ Gamma-Snap Z-Score Strategy ENABLED", "SUCCESS")
+            self.log_message("=" * 60, "INFO")
+            self.log_message("✓ GAMMA-TRAP Z-SCORE STRATEGY ENABLED", "SUCCESS")
+            self.log_message("=" * 60, "INFO")
+            self.log_message("Strategy Parameters:", "INFO")
             self.log_message(f"  VIX Threshold: {self.vix_threshold}", "INFO")
             self.log_message(f"  Z-Score Period: {self.z_score_period} bars", "INFO")
             self.log_message(f"  Z-Score Threshold: ±{self.z_score_threshold}", "INFO")
             self.log_message(f"  Time Stop: {self.time_stop_minutes} minutes", "INFO")
-            self.log_message(f"  Trade Quantity: {self.trade_qty} contracts", "INFO")
+            
+            self.log_message("Uses Master Settings:", "INFO")
+            self.log_message(f"  Target Delta: {self.target_delta_entry.get()}", "INFO")
+            
+            mode = self.position_size_mode.get()
+            if mode == "fixed":
+                self.log_message(f"  Position Size: {self.trade_qty_entry.get()} contracts (Fixed)", "INFO")
+            else:
+                self.log_message(f"  Position Size: Calculated (Max Risk: ${self.max_risk_entry.get()})", "INFO")
+            self.log_message("=" * 60, "INFO")
         else:
-            self.log_message("✗ Gamma-Snap Z-Score Strategy DISABLED", "WARNING")
+            self.log_message("=" * 60, "INFO")
+            self.log_message("✗ GAMMA-TRAP Z-SCORE STRATEGY DISABLED", "WARNING")
             # If there's an active trade, log warning but don't exit
             if self.active_trade_info:
                 self.log_message(
                     "⚠ Warning: Active trade will continue to be monitored for exit conditions",
                     "WARNING"
                 )
+            self.log_message("=" * 60, "INFO")
+        
+        # Auto-save settings
+        self.auto_save_settings()
+    
+    def on_position_mode_change(self):
+        """Handle position size mode radio button change"""
+        mode = self.position_size_mode.get()
+        if mode == "fixed":
+            self.trade_qty_entry.config(state="normal")
+            self.log_message("Position sizing: Fixed quantity mode", "INFO")
+        else:  # calculated
+            self.trade_qty_entry.config(state="disabled")
+            self.log_message("Position sizing: Calculate by max risk mode", "INFO")
+        self.auto_save_settings()
+    
+    def is_market_open(self) -> bool:
+        """
+        Check if SPX/XSP options market is open for trading.
+        
+        Regular Trading Hours: 8:30 AM - 3:15 PM ET, Monday-Friday
+        (Extended hours 8:15 PM - 9:15 AM ET available but not used for automated strategies)
+        
+        Returns:
+            bool: True if market is open for trading
+        """
+        try:
+            from datetime import time
+            import pytz
+            
+            # Get current time in Eastern Time
+            et_tz = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et_tz)
+            
+            # Check if weekend
+            if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+                return False
+            
+            # Check if in regular trading hours (8:30 AM - 3:15 PM ET)
+            current_time = now_et.time()
+            market_open = time(8, 30)   # 8:30 AM
+            market_close = time(15, 15)  # 3:15 PM
+            
+            return market_open <= current_time <= market_close
+            
+        except ImportError:
+            # If pytz not available, use simple check (assumes system time is ET or close enough)
+            self.log_message("WARNING: pytz not installed - using local time for market hours check", "WARNING")
+            now = datetime.now()
+            
+            # Check if weekend
+            if now.weekday() >= 5:
+                return False
+            
+            # Check hours (assuming local time is close to ET)
+            current_time = now.time()
+            market_open = time(8, 30)
+            market_close = time(15, 15)
+            
+            return market_open <= current_time <= market_close
+    
+    def update_straddle_button_states(self):
+        """Update the visual state of straddle strategy ON/OFF buttons"""
+        if self.straddle_enabled:
+            # ON is active (green background)
+            self.straddle_on_btn.config(style="success.TButton")
+            self.straddle_off_btn.config(style="TButton")
+            self.straddle_status_label.config(
+                text="ACTIVE",
+                foreground="#00FF00"
+            )
+        else:
+            # OFF is active (red background)
+            self.straddle_on_btn.config(style="TButton")
+            self.straddle_off_btn.config(style="danger.TButton")
+            self.straddle_status_label.config(
+                text="INACTIVE",
+                foreground="#FF0000"
+            )
+    
+    def set_straddle_enabled(self, enabled: bool):
+        """Enable or disable the automated straddle strategy"""
+        self.straddle_enabled = enabled
+        self.update_straddle_button_states()
+        
+        if enabled:
+            try:
+                self.straddle_frequency_minutes = int(self.straddle_frequency_entry.get())
+            except ValueError:
+                self.straddle_frequency_minutes = 60
+                self.straddle_frequency_entry.delete(0, tk.END)
+                self.straddle_frequency_entry.insert(0, "60")
+            
+            self.log_message("=" * 60, "INFO")
+            self.log_message("✓ STRADDLE STRATEGY ENABLED", "SUCCESS")
+            self.log_message(f"  Frequency: Every {self.straddle_frequency_minutes} minutes", "INFO")
+            self.log_message(f"  Uses Master Settings:", "INFO")
+            self.log_message(f"    Target Delta: {self.target_delta_entry.get()}", "INFO")
+            
+            mode = self.position_size_mode.get()
+            if mode == "fixed":
+                self.log_message(f"    Position Size: {self.trade_qty_entry.get()} contracts (Fixed)", "INFO")
+            else:
+                self.log_message(f"    Position Size: Calculated (Max Risk: ${self.max_risk_entry.get()})", "INFO")
+            self.log_message("=" * 60, "INFO")
+            
+            # Reset timer but DON'T enter immediately - wait for first interval
+            self.last_straddle_time = datetime.now()  # Start timer from now
+            self.log_message(f"⏰ Timer started - first entry in {self.straddle_frequency_minutes} minutes", "INFO")
+        else:
+            self.log_message("=" * 60, "INFO")
+            self.log_message("✗ STRADDLE STRATEGY DISABLED", "WARNING")
+            self.log_message("=" * 60, "INFO")
         
         # Auto-save settings
         self.auto_save_settings()
@@ -2434,12 +3260,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         This provides real-time price updates for the SPX index.
         """
         if self.connection_state != ConnectionState.CONNECTED:
-            self.log_message("Cannot subscribe to SPX price - not connected", "WARNING")
+            self.log_message("Cannot subscribe to underlying price - not connected", "WARNING")
             return
         
-        # Create SPX index contract
+        # Create underlying index contract
         spx_contract = Contract()
-        spx_contract.symbol = "SPX"
+        spx_contract.symbol = UNDERLYING_SYMBOL
         spx_contract.secType = "IND"
         spx_contract.currency = "USD"
         spx_contract.exchange = "CBOE"
@@ -2448,9 +3274,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.spx_req_id = self.next_req_id
         self.next_req_id += 1
         
-        # Request market data for SPX
+        # Request market data for underlying
         self.reqMktData(self.spx_req_id, spx_contract, "", False, False, [])
-        self.log_message(f"Subscribed to SPX underlying price (reqId: {self.spx_req_id})", "INFO")
+        self.log_message(f"Subscribed to {UNDERLYING_SYMBOL} underlying price (reqId: {self.spx_req_id})", "INFO")
         
         # Subscribe to VIX for strategy filter
         self.subscribe_vix_price()
@@ -2473,12 +3299,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message(f"Subscribed to VIX (reqId: {self.vix_req_id})", "INFO")
     
     def request_spx_1min_history(self):
-        """Request SPX 1-minute historical data for Z-Score calculation"""
+        """Request underlying 1-minute historical data for Z-Score calculation"""
         if self.connection_state != ConnectionState.CONNECTED:
             return
         
         spx_contract = Contract()
-        spx_contract.symbol = "SPX"
+        spx_contract.symbol = UNDERLYING_SYMBOL
         spx_contract.secType = "IND"
         spx_contract.currency = "USD"
         spx_contract.exchange = "CBOE"
@@ -2496,12 +3322,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             True,  # Keep up to date (streaming)
             []  # Chart options
         )
-        self.log_message(f"Requested SPX 1-min history for Z-Score (reqId: {self.spx_1min_req_id})", "INFO")
+        self.log_message(f"Requested {UNDERLYING_SYMBOL} 1-min history for Z-Score (reqId: {self.spx_1min_req_id})", "INFO")
     
     def update_spx_price_display(self):
-        """Update the SPX price display in the GUI"""
+        """Update the underlying price display in the GUI"""
         if self.spx_price > 0:
-            self.spx_price_label.config(text=f"SPX: {self.spx_price:.2f}")
+            self.spx_price_label.config(text=f"{UNDERLYING_SYMBOL}: {self.spx_price:.2f}")
             # Also update status bar if it exists
             if hasattr(self, 'spx_label'):
                 self.spx_label.config(text=f"SPX: {self.spx_price:.2f}")
@@ -2609,28 +3435,34 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         return f"{contract.symbol}_{strike_str}_{contract.right}_{expiry_yyyymmdd}"
     
-    def create_option_contract(self, strike: float, right: str, symbol: str = "SPX", 
-                              trading_class: str = "SPXW") -> Contract:
+    def create_option_contract(self, strike: float, right: str, symbol: Optional[str] = None, 
+                              trading_class: Optional[str] = None) -> Contract:
         """
         Create an option contract with current expiration.
         
         Args:
             strike: Strike price
             right: "C" for call or "P" for put
-            symbol: Underlying symbol (default: "SPX")
-            trading_class: Trading class (default: "SPXW" for SPX weeklies)
+            symbol: Underlying symbol (uses TRADING_SYMBOL if not specified)
+            trading_class: Trading class (uses TRADING_CLASS if not specified)
         
         Returns:
             Contract object ready for IBKR API calls
         
-        NOTE: For SPX weekly options (0DTE), MUST use tradingClass="SPXW"
+        NOTE: For SPX/XSP options, tradingClass must match the symbol
         """
+        # Use configured symbol if not specified
+        if symbol is None:
+            symbol = TRADING_SYMBOL
+        if trading_class is None:
+            trading_class = TRADING_CLASS
+        
         contract = Contract()
         contract.symbol = symbol
         contract.secType = "OPT"
         contract.currency = "USD"
         contract.exchange = "SMART"
-        contract.tradingClass = trading_class  # "SPXW" for SPX weeklies
+        contract.tradingClass = trading_class
         contract.strike = strike
         contract.right = right  # "C" or "P"
         contract.lastTradeDateOrContractMonth = self.current_expiry
@@ -2639,7 +3471,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # DIAGNOSTIC: Log contract creation to verify expiration
         if not hasattr(self, '_contract_creation_logged'):
             self._contract_creation_logged = True
-            self.log_message(f"Creating contracts with expiration: {self.current_expiry}", "INFO")
+            self.log_message(f"Creating {symbol} contracts with expiration: {self.current_expiry}", "INFO")
         
         return contract
     
@@ -3205,128 +4037,100 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # ========================================================================
     
     def check_trade_time(self):
-        """Check if it's time to enter a new straddle"""
+        """
+        Check if it's time to enter a new straddle based on configured frequency.
+        Only executes during regular market hours (8:30 AM - 3:15 PM ET).
+        """
         if not self.root:
             return
-        now = datetime.now()
         
-        # Check if it's the top of the hour
-        if now.minute == 0 and now.second == 0:
-            if self.last_trade_hour != now.hour:
-                self.last_trade_hour = now.hour
-                self.log_message(f"Hourly trigger at {now.strftime('%H:%M:%S')}", "INFO")
-                self.enter_straddle()
+        # Only check if straddle strategy is enabled
+        if self.straddle_enabled:
+            now = datetime.now()
+            
+            # Check if market is open
+            if not self.is_market_open():
+                # Market closed - update status
+                if hasattr(self, 'straddle_next_label'):
+                    self.straddle_next_label.config(
+                        text="Market Closed",
+                        foreground="#FF0000"
+                    )
+                # Schedule next check
+                self.root.after(1000, self.check_trade_time)
+                return
+            
+            # Market is open - check if it's time to trade
+            if self.last_straddle_time is None:
+                # Should not happen (timer set in set_straddle_enabled)
+                # But if it does, start timer now
+                self.last_straddle_time = now
+            else:
+                # Check if enough time has elapsed
+                elapsed_minutes = (now - self.last_straddle_time).total_seconds() / 60
+                
+                if elapsed_minutes >= self.straddle_frequency_minutes:
+                    self.log_message(
+                        f"Straddle timer triggered ({elapsed_minutes:.1f} min elapsed, "
+                        f"frequency: {self.straddle_frequency_minutes} min)", 
+                        "INFO"
+                    )
+                    self.enter_straddle()
+                    self.last_straddle_time = now
+                else:
+                    # Update countdown display
+                    remaining = self.straddle_frequency_minutes - elapsed_minutes
+                    next_time = now + timedelta(minutes=remaining)
+                    if hasattr(self, 'straddle_next_label'):
+                        self.straddle_next_label.config(
+                            text=f"Next: {next_time.strftime('%H:%M')}",
+                            foreground="#00BFFF"
+                        )
         
-        # Schedule next check
+        # Schedule next check (every second for smooth countdown)
         self.root.after(1000, self.check_trade_time)
     
     def enter_straddle(self):
         """
-        Enter a long straddle at the top of the hour.
-        Searches for the cheapest call and put with ask price <= $0.50.
+        Enter a long straddle using the same logic as Manual Buy Call/Put buttons.
+        Uses Master Settings for target delta and position sizing.
         
-        NOTE: This is the AUTOMATED STRATEGY MODE function.
-        Only runs when strategy_enabled = True.
+        This is the STRADDLE STRATEGY function - only runs when straddle_enabled = True.
         """
-        # Check if automated strategy is enabled
-        if not self.strategy_enabled:
-            self.log_message("Automated strategy is disabled - skipping straddle entry", "INFO")
+        # Check if straddle strategy is enabled
+        if not self.straddle_enabled:
+            self.log_message("Straddle strategy is disabled - skipping entry", "INFO")
             return
         
         if self.connection_state != ConnectionState.CONNECTED:
             self.log_message("Cannot enter straddle: Not connected to IBKR", "WARNING")
             return
         
+        if not self.data_server_ok:
+            self.log_message("Cannot enter straddle: Data server not ready", "WARNING")
+            return
+        
+        # Check if market is open
+        if not self.is_market_open():
+            self.log_message("Cannot enter straddle: Market is closed (Regular hours: 8:30 AM - 3:15 PM ET)", "WARNING")
+            return
+        
         self.log_message("=" * 60, "INFO")
-        self.log_message("HOURLY STRADDLE ENTRY INITIATED", "INFO")
-        self.log_message("Scanning option chain for entry opportunities (ask <= $0.50)...", "INFO")
+        self.log_message("🔔 STRADDLE STRATEGY ENTRY TRIGGERED 🔔", "SUCCESS")
+        self.log_message("=" * 60, "INFO")
         
-        # Find cheapest call and put with ask <= $0.50
-        best_call = None
-        best_call_key = None
-        best_put = None
-        best_put_key = None
+        # This emulates clicking BUY CALL and BUY PUT buttons
+        # Uses same Master Settings (target delta, position size mode, etc.)
         
-        calls_found = 0
-        puts_found = 0
+        self.log_message("Entering CALL leg...", "INFO")
+        self.manual_buy_call()
         
-        for contract_key, data in self.market_data.items():
-            ask = data['ask']
-            
-            # Only consider options with valid ask prices
-            if ask <= 0.50 and ask > 0:
-                if data['right'] == 'C':
-                    calls_found += 1
-                    if best_call is None or ask < best_call['ask']:
-                        best_call = data
-                        best_call_key = contract_key
-                elif data['right'] == 'P':
-                    puts_found += 1
-                    if best_put is None or ask < best_put['ask']:
-                        best_put = data
-                        best_put_key = contract_key
+        # Small delay between legs to avoid overwhelming the system
+        if self.root:
+            self.root.after(500, lambda: self.log_message("Entering PUT leg...", "INFO"))
+            self.root.after(1000, self.manual_buy_put)
         
-        self.log_message(f"Found {calls_found} calls and {puts_found} puts with ask <= $0.50", "INFO")
-        
-        # Place orders if we found both legs
-        if best_call and best_put and best_call_key and best_put_key:
-            total_cost = best_call['ask'] + best_put['ask']
-            self.log_message(
-                f"STRADDLE SELECTED - Total cost: ${total_cost:.2f}", 
-                "SUCCESS"
-            )
-            self.log_message(
-                f"  Call: Strike {best_call['strike']:.2f} @ ${best_call['ask']:.2f} "
-                f"(Delta: {best_call['delta']:.4f})", 
-                "INFO"
-            )
-            self.log_message(
-                f"  Put:  Strike {best_put['strike']:.2f} @ ${best_put['ask']:.2f} "
-                f"(Delta: {best_put['delta']:.4f})", 
-                "INFO"
-            )
-            
-            # Place call order (automated - no chasing)
-            self.log_message("Placing CALL order...", "INFO")
-            call_order_id = self.place_order(
-                contract_key=best_call_key,
-                contract=best_call['contract'],
-                action="BUY",
-                quantity=1,
-                limit_price=best_call['ask'],
-                enable_chasing=False  # Automated orders don't chase
-            )
-            
-            # Place put order (automated - no chasing)
-            self.log_message("Placing PUT order...", "INFO")
-            put_order_id = self.place_order(
-                contract_key=best_put_key,
-                contract=best_put['contract'],
-                action="BUY",
-                quantity=1,
-                limit_price=best_put['ask'],
-                enable_chasing=False  # Automated orders don't chase
-            )
-            
-            # Track straddle for risk management
-            straddle_info = {
-                'call_key': best_call_key,
-                'put_key': best_put_key,
-                'entry_time': datetime.now(),
-                'call_entry_price': best_call['ask'],
-                'put_entry_price': best_put['ask'],
-                'call_order_id': call_order_id,
-                'put_order_id': put_order_id
-            }
-            self.active_straddles.append(straddle_info)
-            
-            self.log_message(f"Straddle orders placed (Call Order: {call_order_id}, Put Order: {put_order_id})", "SUCCESS")
-        else:
-            self.log_message(
-                "STRADDLE ENTRY SKIPPED - No suitable options found with ask <= $0.50", 
-                "WARNING"
-            )
-        
+        self.log_message("=" * 60, "INFO")
         self.log_message("=" * 60, "INFO")
     
     def place_order(self, contract_key: str, contract: Contract, action: str, 
@@ -3386,10 +4190,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not contract.multiplier:
             contract.multiplier = "100"
         
-        # CRITICAL: SPX options REQUIRE tradingClass="SPXW" for 0DTE
-        if contract.symbol == "SPX" and not contract.tradingClass:
-            contract.tradingClass = "SPXW"
-            self.log_message(f"Set tradingClass = SPXW for SPX contract", "INFO")
+        # CRITICAL: Set tradingClass for 0DTE options
+        if not contract.tradingClass:
+            contract.tradingClass = TRADING_CLASS
+            self.log_message(f"Set tradingClass = {TRADING_CLASS} for {TRADING_SYMBOL} contract", "INFO")
         
         # DIAGNOSTIC: Validate contract has ALL required fields
         missing_fields = []
@@ -3709,72 +4513,114 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.enter_trade('SHORT')
     
     def enter_trade(self, direction: str):
-        """Enter a trade based on strategy signal"""
-        # Determine option type and target delta
+        """
+        Enter a trade based on strategy signal.
+        Uses Master Settings for delta targeting and position sizing.
+        """
+        self.log_message("=" * 60, "INFO")
+        self.log_message(f"🎯 GAMMA-TRAP STRATEGY ENTRY ({direction}) 🎯", "SUCCESS")
+        self.log_message("=" * 60, "INFO")
+        
+        # Determine option type based on direction
         option_type = 'C' if direction == 'LONG' else 'P'
-        target_delta = 0.45 if direction == 'LONG' else -0.45
         
-        # Find option closest to target delta
-        best_option_key = None
-        min_delta_diff = float('inf')
+        # Get target delta from Master Settings
+        try:
+            target_delta = float(self.target_delta_entry.get())
+            if target_delta <= 0 or target_delta > 100:
+                raise ValueError("Target delta must be between 0 and 100")
+        except (ValueError, AttributeError) as e:
+            self.log_message(f"Invalid target delta, using default 30: {e}", "WARNING")
+            target_delta = 30.0
         
-        for key, data in self.market_data.items():
-            if data.get('right') == option_type:
-                delta = data.get('delta', 0)
-                if delta != 0:  # Ensure delta is calculated
-                    delta_diff = abs(delta - target_delta)
-                    if delta_diff < min_delta_diff:
-                        min_delta_diff = delta_diff
-                        best_option_key = key
+        self.log_message(f"Strategy Signal: {direction} - Target Delta: {target_delta}", "INFO")
         
-        if not best_option_key:
+        # Find option by delta using shared function
+        result = self.find_option_by_delta(option_type, target_delta)
+        if not result:
             self.log_message(
-                f"STRATEGY: Could not find suitable {option_type} option",
+                f"STRATEGY: Could not find suitable {option_type} option near {target_delta} delta",
                 "WARNING"
             )
             return
         
-        # Get option data
-        option_data = self.market_data[best_option_key]
+        contract_key, contract, ask_price, actual_delta = result
         
-        # Use mid-price with chasing (same logic as manual trading)
-        limit_price = self.calculate_mid_price(best_option_key)
+        # Calculate quantity based on position sizing mode (from Master Settings)
+        position_mode = self.position_size_mode.get()
+        if position_mode == "fixed":
+            # Use fixed quantity from Trade Qty field
+            try:
+                quantity = int(self.trade_qty_entry.get())
+                if quantity <= 0:
+                    raise ValueError("Quantity must be positive")
+            except (ValueError, AttributeError) as e:
+                self.log_message(f"Invalid trade quantity, using 1: {e}", "WARNING")
+                quantity = 1
+            self.log_message(f"Position sizing: Fixed quantity = {quantity} contracts", "INFO")
+        else:  # calculated
+            # Calculate quantity based on max risk / option price
+            try:
+                max_risk = float(self.max_risk_entry.get())
+                if max_risk <= 0:
+                    raise ValueError("Max risk must be positive")
+            except (ValueError, AttributeError) as e:
+                self.log_message(f"Invalid max risk, using default $500: {e}", "WARNING")
+                max_risk = 500.0
+            
+            # Calculate: Max Risk / (Option Price * 100 multiplier)
+            quantity = int(max_risk / ask_price)
+            if quantity <= 0:
+                quantity = 1  # Minimum 1 contract
+            
+            total_risk = quantity * ask_price
+            self.log_message(f"Position sizing: Calculated by risk", "INFO")
+            self.log_message(f"  Max Risk: ${max_risk:.2f}", "INFO")
+            self.log_message(f"  Option Price: ${ask_price:.2f}", "INFO")
+            self.log_message(f"  Quantity: {quantity} contracts", "INFO")
+            self.log_message(f"  Actual Risk: ${total_risk:.2f}", "INFO")
+        
+        # Log contract details
+        self.log_message(f"Contract found: {contract_key}", "INFO")
+        self.log_message(f"Delta: {actual_delta:.1f} (Target: {target_delta})", "INFO")
+        
+        # Calculate mid-price for order
+        limit_price = self.calculate_mid_price(contract_key)
         if not limit_price or limit_price <= 0:
-            self.log_message(
-                f"STRATEGY: Invalid mid-price for {best_option_key}",
-                "ERROR"
-            )
-            return
+            self.log_message("Cannot calculate mid price - using ask price", "WARNING")
+            limit_price = ask_price
         
         # Place the order with mid-price chasing enabled
         order_id = self.place_order(
-            best_option_key,
-            option_data['contract'],
+            contract_key,
+            contract,
             "BUY",
-            self.trade_qty,
+            quantity,
             limit_price,
             enable_chasing=True  # Enable chasing for better fills
         )
         
         if order_id:
             self.active_trade_info = {
-                'contract_key': best_option_key,
+                'contract_key': contract_key,
                 'direction': direction,
                 'entry_time': datetime.now(),
                 'order_id': order_id,
                 'status': 'SUBMITTED',
                 'profit_target_price': self.indicators['ema9'],
                 'entry_price': None,
-                'delta': option_data.get('delta', 0)
+                'delta': actual_delta,
+                'quantity': quantity  # Store quantity for exit
             }
             if hasattr(self, 'strategy_status_var'):
                 self.strategy_status_var.set(f"Status: IN TRADE ({direction})")
             
             self.log_message(
-                f"STRATEGY: Entered {direction} {best_option_key} @ ${limit_price:.2f} "
-                f"(Delta: {option_data.get('delta', 0):.2f})",
+                f"Gamma-Trap order #{order_id} submitted: {quantity} contracts @ ${limit_price:.2f}",
                 "SUCCESS"
             )
+        
+        self.log_message("=" * 60, "INFO")
     
     def check_trade_exit(self):
         """Check exit conditions for active trade"""
@@ -3814,9 +4660,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return
     
     def exit_trade(self, reason: str):
-        """Exit the active trade"""
+        """Exit the active trade using stored quantity from entry"""
         trade = self.active_trade_info
         contract_key = trade['contract_key']
+        
+        # Get quantity from trade info (set during entry)
+        quantity = trade.get('quantity', 1)  # Default to 1 if not found
         
         # Get market data
         option_data = self.market_data.get(contract_key)
@@ -3838,7 +4687,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             limit_price = 0.01
         
         self.log_message(
-            f"STRATEGY: Exiting {contract_key} due to: {reason} @ ${limit_price:.2f}",
+            f"STRATEGY: Exiting {contract_key} ({quantity} contracts) due to: {reason} @ ${limit_price:.2f}",
             "INFO"
         )
         
@@ -3847,7 +4696,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             contract_key,
             option_data['contract'],
             "SELL",
-            self.trade_qty,
+            quantity,  # Use stored quantity from entry
             limit_price,
             enable_chasing=True  # Enable chasing for better fills
         )
@@ -3958,10 +4807,80 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
             return None
     
+    def find_option_by_delta(self, option_type: str, target_delta: float):
+        """
+        Find option contract closest to target delta
+        
+        Args:
+            option_type: "C" for call or "P" for put
+            target_delta: Target delta value (0-100, e.g., 30 for 30 delta)
+        
+        Returns:
+            tuple: (contract_key, contract, ask_price, actual_delta) or None
+        """
+        try:
+            if not self.market_data:
+                self.log_message("No market data available", "WARNING")
+                return None
+            
+            # Convert target delta to decimal (30 -> 0.30)
+            target_delta_decimal = abs(target_delta / 100.0)
+            
+            best_delta_diff = float('inf')
+            best_option = None
+            best_contract_key = None
+            best_price = 0
+            best_delta = 0
+            
+            # Scan all options in market_data
+            for contract_key, data in self.market_data.items():
+                # Skip if wrong option type
+                if option_type not in contract_key:
+                    continue
+                
+                # Must have valid greeks
+                delta = data.get('delta')
+                if delta is None or delta == 0:
+                    continue
+                
+                # For puts, delta is negative - use absolute value
+                abs_delta = abs(delta)
+                
+                # Find closest to target delta
+                delta_diff = abs(abs_delta - target_delta_decimal)
+                
+                if delta_diff < best_delta_diff:
+                    ask = data.get('ask', 0)
+                    if ask > 0:  # Must have valid ask price
+                        best_delta_diff = delta_diff
+                        best_option = data.get('contract')
+                        best_contract_key = contract_key
+                        best_price = ask
+                        best_delta = abs_delta * 100  # Convert back to 0-100 scale
+            
+            if best_option and best_contract_key:
+                self.log_message(
+                    f"✓ Found {option_type} option: {best_contract_key} @ ${best_price:.2f} "
+                    f"(Delta: {best_delta:.1f}, Target: {target_delta:.1f})", 
+                    "SUCCESS"
+                )
+                return (best_contract_key, best_option, best_price, best_delta)
+            else:
+                self.log_message(
+                    f"✗ No {option_type} options found with valid delta near {target_delta}", 
+                    "WARNING"
+                )
+                return None
+        except Exception as e:
+            self.log_message(f"Error in find_option_by_delta: {e}", "ERROR")
+            import traceback
+            self.log_message(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return None
+    
     def manual_buy_call(self):
         """
         Manual trading: Buy call option
-        Finds closest strike to max risk and places mid-price order with chasing
+        Finds contract by target delta and calculates position size based on mode
         """
         self.log_message("=" * 60, "INFO")
         self.log_message("🔔 BUY CALL BUTTON CLICKED 🔔", "SUCCESS")
@@ -3978,30 +4897,68 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 messagebox.showerror("Not Ready", "Data server not ready. Please wait for confirmation message.")
                 return
             
+            # Get target delta
             try:
-                max_risk = float(self.max_risk_var.get())
-                if max_risk <= 0:
-                    raise ValueError("Max risk must be positive")
+                target_delta = float(self.target_delta_entry.get())
+                if target_delta <= 0 or target_delta > 100:
+                    raise ValueError("Target delta must be between 0 and 100")
             except ValueError as e:
-                self.log_message(f"Invalid max risk value: {e}", "ERROR")
-                messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                self.log_message(f"Invalid target delta: {e}", "ERROR")
+                messagebox.showerror("Invalid Input", "Please enter a valid target delta (0-100)")
                 return
             
-            self.log_message("MANUAL BUY CALL INITIATED", "SUCCESS")
+            self.log_message(f"MANUAL BUY CALL INITIATED - Target Delta: {target_delta}", "SUCCESS")
             
-            result = self.find_option_by_max_risk("C", max_risk)
+            # Find option by delta
+            result = self.find_option_by_delta("C", target_delta)
             if not result:
                 self.log_message("No suitable call options found", "WARNING")
                 messagebox.showwarning("No Options Found", 
-                                        f"No call options found with risk ≤ ${max_risk:.2f}")
+                                        f"No call options found near {target_delta} delta")
                 return
             
-            contract_key, contract, ask_price = result
+            contract_key, contract, ask_price, actual_delta = result
             
-            # DIAGNOSTIC: Log the contract expiration to verify it matches selected expiry
+            # Calculate quantity based on mode
+            position_mode = self.position_size_mode.get()
+            if position_mode == "fixed":
+                # Use fixed quantity from Trade Qty field
+                try:
+                    quantity = int(self.trade_qty_entry.get())
+                    if quantity <= 0:
+                        raise ValueError("Quantity must be positive")
+                except ValueError as e:
+                    self.log_message(f"Invalid trade quantity: {e}", "ERROR")
+                    messagebox.showerror("Invalid Input", "Please enter a valid trade quantity")
+                    return
+                self.log_message(f"Position sizing: Fixed quantity = {quantity} contracts", "INFO")
+            else:  # calculated
+                # Calculate quantity based on max risk / option price
+                try:
+                    max_risk = float(self.max_risk_entry.get())
+                    if max_risk <= 0:
+                        raise ValueError("Max risk must be positive")
+                except ValueError as e:
+                    self.log_message(f"Invalid max risk: {e}", "ERROR")
+                    messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                    return
+                
+                # Calculate: Max Risk / (Option Price * 100 multiplier)
+                quantity = int(max_risk / ask_price)
+                if quantity <= 0:
+                    quantity = 1  # Minimum 1 contract
+                
+                total_risk = quantity * ask_price
+                self.log_message(f"Position sizing: Calculated by risk", "INFO")
+                self.log_message(f"  Max Risk: ${max_risk:.2f}", "INFO")
+                self.log_message(f"  Option Price: ${ask_price:.2f}", "INFO")
+                self.log_message(f"  Quantity: {quantity} contracts", "INFO")
+                self.log_message(f"  Actual Risk: ${total_risk:.2f}", "INFO")
+            
+            # DIAGNOSTIC: Log the contract details
             self.log_message(f"Contract found: {contract_key}", "INFO")
             self.log_message(f"Contract expiration: {contract.lastTradeDateOrContractMonth}", "INFO")
-            self.log_message(f"Expected expiration (current_expiry): {self.current_expiry}", "INFO")
+            self.log_message(f"Delta: {actual_delta:.1f} (Target: {target_delta})", "INFO")
             
             # Calculate mid price for order
             mid_price = self.calculate_mid_price(contract_key)
@@ -4014,13 +4971,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 contract_key=contract_key,
                 contract=contract,
                 action="BUY",
-                quantity=1,
+                quantity=quantity,
                 limit_price=mid_price,
                 enable_chasing=True  # Manual orders chase the mid-price
             )
             
             if order_id:
-                self.log_message(f"Manual CALL order #{order_id} submitted with mid-price chasing", "SUCCESS")
+                self.log_message(f"Manual CALL order #{order_id} submitted: {quantity} contracts @ ${mid_price:.2f}", "SUCCESS")
             self.log_message("=" * 60, "INFO")
             
         except Exception as e:
@@ -4032,38 +4989,85 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def manual_buy_put(self):
         """
         Manual trading: Buy put option
-        Finds closest strike to max risk and places mid-price order with chasing
+        Finds contract by target delta and calculates position size based on mode
         """
+        self.log_message("=" * 60, "INFO")
+        self.log_message("🔔 BUY PUT BUTTON CLICKED 🔔", "SUCCESS")
+        self.log_message("=" * 60, "INFO")
+        
         try:
             if self.connection_state != ConnectionState.CONNECTED:
-                self.log_message("Cannot place order: Not connected to IBKR", "ERROR")
+                self.log_message("❌ Cannot place order: Not connected to IBKR", "ERROR")
                 messagebox.showerror("Not Connected", "Please connect to IBKR before trading")
                 return
             
+            if not self.data_server_ok:
+                self.log_message("❌ Cannot place order: Data server not ready", "ERROR")
+                messagebox.showerror("Not Ready", "Data server not ready. Please wait for confirmation message.")
+                return
+            
+            # Get target delta
             try:
-                max_risk = float(self.max_risk_var.get())
-                if max_risk <= 0:
-                    raise ValueError("Max risk must be positive")
+                target_delta = float(self.target_delta_entry.get())
+                if target_delta <= 0 or target_delta > 100:
+                    raise ValueError("Target delta must be between 0 and 100")
             except ValueError as e:
-                self.log_message(f"Invalid max risk value: {e}", "ERROR")
-                messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                self.log_message(f"Invalid target delta: {e}", "ERROR")
+                messagebox.showerror("Invalid Input", "Please enter a valid target delta (0-100)")
                 return
             
-            self.log_message("=" * 60, "INFO")
-            self.log_message("MANUAL BUY PUT INITIATED", "SUCCESS")
+            self.log_message(f"MANUAL BUY PUT INITIATED - Target Delta: {target_delta}", "SUCCESS")
             
-            result = self.find_option_by_max_risk("P", max_risk)
+            # Find option by delta
+            result = self.find_option_by_delta("P", target_delta)
             if not result:
+                self.log_message("No suitable put options found", "WARNING")
                 messagebox.showwarning("No Options Found", 
-                                        f"No put options found with risk ≤ ${max_risk:.2f}")
+                                        f"No put options found near {target_delta} delta")
                 return
             
-            contract_key, contract, ask_price = result
+            contract_key, contract, ask_price, actual_delta = result
             
-            # DIAGNOSTIC: Log the contract expiration to verify it matches selected expiry
+            # Calculate quantity based on mode
+            position_mode = self.position_size_mode.get()
+            if position_mode == "fixed":
+                # Use fixed quantity from Trade Qty field
+                try:
+                    quantity = int(self.trade_qty_entry.get())
+                    if quantity <= 0:
+                        raise ValueError("Quantity must be positive")
+                except ValueError as e:
+                    self.log_message(f"Invalid trade quantity: {e}", "ERROR")
+                    messagebox.showerror("Invalid Input", "Please enter a valid trade quantity")
+                    return
+                self.log_message(f"Position sizing: Fixed quantity = {quantity} contracts", "INFO")
+            else:  # calculated
+                # Calculate quantity based on max risk / option price
+                try:
+                    max_risk = float(self.max_risk_entry.get())
+                    if max_risk <= 0:
+                        raise ValueError("Max risk must be positive")
+                except ValueError as e:
+                    self.log_message(f"Invalid max risk: {e}", "ERROR")
+                    messagebox.showerror("Invalid Input", "Please enter a valid max risk amount")
+                    return
+                
+                # Calculate: Max Risk / (Option Price * 100 multiplier)
+                quantity = int(max_risk / ask_price)
+                if quantity <= 0:
+                    quantity = 1  # Minimum 1 contract
+                
+                total_risk = quantity * ask_price
+                self.log_message(f"Position sizing: Calculated by risk", "INFO")
+                self.log_message(f"  Max Risk: ${max_risk:.2f}", "INFO")
+                self.log_message(f"  Option Price: ${ask_price:.2f}", "INFO")
+                self.log_message(f"  Quantity: {quantity} contracts", "INFO")
+                self.log_message(f"  Actual Risk: ${total_risk:.2f}", "INFO")
+            
+            # DIAGNOSTIC: Log the contract details
             self.log_message(f"Contract found: {contract_key}", "INFO")
             self.log_message(f"Contract expiration: {contract.lastTradeDateOrContractMonth}", "INFO")
-            self.log_message(f"Expected expiration (current_expiry): {self.current_expiry}", "INFO")
+            self.log_message(f"Delta: {actual_delta:.1f} (Target: {target_delta})", "INFO")
             
             # Calculate mid price for order
             mid_price = self.calculate_mid_price(contract_key)
@@ -4076,13 +5080,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 contract_key=contract_key,
                 contract=contract,
                 action="BUY",
-                quantity=1,
+                quantity=quantity,
                 limit_price=mid_price,
                 enable_chasing=True  # Manual orders chase the mid-price
             )
             
             if order_id:
-                self.log_message(f"Manual PUT order #{order_id} submitted with mid-price chasing", "SUCCESS")
+                self.log_message(f"Manual PUT order #{order_id} submitted: {quantity} contracts @ ${mid_price:.2f}", "SUCCESS")
             self.log_message("=" * 60, "INFO")
             
         except Exception as e:
@@ -4093,17 +5097,24 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def update_manual_orders(self):
         """
-        Monitor all manual orders and chase mid-price when market moves
+        Monitor all manual orders with aggressive chasing strategy
         
         Runs every 1 second to check if:
         1. Order is still open (not filled/cancelled)
         2. Mid-price has moved significantly
-        3. Re-pricing is needed to improve fill probability
+        3. After 10+ seconds, start giving in on price to force fills
+        
+        AGGRESSIVE CHASING STRATEGY:
+        - First 10 seconds: Chase exact mid-price
+        - After 10 seconds: Give in by $0.05 (if option < $3) or $0.10 (if option >= $3)
+        - Every additional 10 seconds: Give in another increment
+        - This forces stale orders to fill faster
         """
         if not self.manual_orders:
             return  # No orders to monitor
         
         orders_to_remove = []
+        current_time = datetime.now()
         
         for order_id, order_info in self.manual_orders.items():
             # Check if order is still pending
@@ -4118,16 +5129,56 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             if current_mid == 0:
                 continue  # No valid market data
             
-            last_mid = order_info['last_mid']
+            # Calculate time since order placed
+            time_elapsed = (current_time - order_info['timestamp']).total_seconds()
             
-            # Check if mid-price has moved significantly
-            price_diff = abs(current_mid - last_mid)
+            # Determine price increment based on option price
+            if current_mid < 3.00:
+                increment = 0.05  # $0.05 for cheaper options
+            else:
+                increment = 0.10  # $0.10 for more expensive options
             
-            if price_diff >= 0.05:  # Moved at least one tick ($0.05)
-                # Mid has moved - modify the order price
+            # Calculate how much to give in based on elapsed time
+            # First 10 seconds: 0 concession (chase exact mid)
+            # After 10 seconds: 1 increment concession
+            # After 20 seconds: 2 increment concession, etc.
+            concession_count = int(time_elapsed // 10) - 1  # -1 because first 10 secs = 0 concession
+            concession_count = max(0, concession_count)  # Never negative
+            
+            # Calculate target price based on action
+            if order_info['action'] == "BUY":
+                # For BUY orders, we're willing to pay MORE to get filled
+                target_price = current_mid + (concession_count * increment)
+            else:  # SELL
+                # For SELL orders, we're willing to accept LESS to get filled
+                target_price = current_mid - (concession_count * increment)
+                target_price = max(0.05, target_price)  # Never go below $0.05
+            
+            last_price = order_info['last_mid']
+            
+            # Check if we need to update price
+            price_diff = abs(target_price - last_price)
+            should_update = False
+            update_reason = ""
+            
+            # Always update if mid moved significantly (at least one tick)
+            if abs(current_mid - last_price) >= 0.05:
+                should_update = True
+                update_reason = f"Mid moved ${last_price:.2f} → ${current_mid:.2f}"
+            
+            # Also update when we cross a 10-second threshold (new concession)
+            elif concession_count > 0 and price_diff >= increment * 0.5:
+                should_update = True
+                if concession_count == 1:
+                    update_reason = f"10s elapsed - giving in ${increment:.2f}"
+                else:
+                    update_reason = f"{int(time_elapsed)}s elapsed - giving in ${concession_count * increment:.2f} total"
+            
+            if should_update:
+                # Log the update with reasoning
                 self.log_message(
-                    f"Order #{order_id}: Mid moved ${last_mid:.2f} → ${current_mid:.2f}, updating price...",
-                    "INFO"
+                    f"Order #{order_id}: {update_reason}, updating ${last_price:.2f} → ${target_price:.2f}",
+                    "WARNING" if concession_count > 0 else "INFO"
                 )
                 
                 # Modify existing order with new price
@@ -4135,7 +5186,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 modified_order.action = order_info['action']
                 modified_order.totalQuantity = order_info['quantity']
                 modified_order.orderType = "LMT"
-                modified_order.lmtPrice = current_mid
+                modified_order.lmtPrice = target_price
                 modified_order.tif = "DAY"
                 modified_order.transmit = True
                 
@@ -4143,14 +5194,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.placeOrder(order_id, order_info['contract'], modified_order)
                 
                 # Update tracking
-                order_info['last_mid'] = current_mid
+                order_info['last_mid'] = target_price
                 order_info['attempts'] += 1
                 
                 # Update price in display
-                self.update_order_in_tree(order_id, "Chasing Mid", current_mid)
+                status_text = "Chasing Mid" if concession_count == 0 else f"Giving In x{concession_count}"
+                self.update_order_in_tree(order_id, status_text, target_price)
                 
                 self.log_message(
-                    f"Order #{order_id} price updated to ${current_mid:.2f} (attempt #{order_info['attempts']})",
+                    f"Order #{order_id} price updated to ${target_price:.2f} (attempt #{order_info['attempts']}, {int(time_elapsed)}s elapsed)",
                     "SUCCESS"
                 )
         
@@ -4202,6 +5254,39 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             pos = self.positions[matching_key]
             
+            # PROTECTION: Check if position is zero (nothing to close)
+            if pos['position'] == 0:
+                self.log_message(f"⚠️ WARNING: Position for {matching_key} is zero - nothing to close!", "WARNING")
+                messagebox.showwarning(
+                    "Invalid Position",
+                    f"Position quantity is zero.\n"
+                    "There is no position to close!\n\n"
+                    "This may indicate the position was already closed or there's a tracking issue."
+                )
+                return
+            
+            # PROTECTION: Check for pending exit orders for this contract
+            # Check for either SELL orders (closing long) or BUY orders (closing short)
+            pending_exit_orders = []
+            for order_id, order_info in self.manual_orders.items():
+                if order_info['contract_key'] == matching_key:
+                    # Check if this is an exit order (opposite direction of position)
+                    is_exit_order = (pos['position'] > 0 and order_info['action'] == "SELL") or \
+                                   (pos['position'] < 0 and order_info['action'] == "BUY")
+                    if is_exit_order:
+                        pending_exit_orders.append(order_id)
+            
+            if pending_exit_orders:
+                action_type = "SELL" if pos['position'] > 0 else "BUY"
+                self.log_message(f"⚠️ WARNING: Already have {len(pending_exit_orders)} pending {action_type} order(s) for {matching_key}!", "WARNING")
+                messagebox.showwarning(
+                    "Pending Exit Order",
+                    f"There are already {len(pending_exit_orders)} pending {action_type} order(s) for this position!\n\n"
+                    f"Order IDs: {', '.join(map(str, pending_exit_orders))}\n\n"
+                    "Please wait for the existing order to fill or cancel it first."
+                )
+                return
+            
             # Confirm close
             confirm = messagebox.askyesno(
                 "Close Position",
@@ -4224,16 +5309,27 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 mid_price = pos['currentPrice']
                 self.log_message(f"Using last price ${mid_price:.2f} for exit", "WARNING")
             
-            # Place sell order (opposite of entry)
-            action = "SELL"
-            quantity = int(abs(pos['position']))  # Ensure integer quantity
+            # CRITICAL FIX: Determine action based on position direction
+            # If LONG (positive) → SELL to close
+            # If SHORT (negative) → BUY to close (should never happen for options!)
+            position_qty = pos['position']
+            quantity = int(abs(position_qty))  # Ensure integer quantity
+            
+            if position_qty > 0:
+                action = "SELL"  # Close long position
+            elif position_qty < 0:
+                action = "BUY"   # Close short position (SHOULD NEVER HAPPEN WITH OPTIONS!)
+                self.log_message("⚠️ WARNING: Closing SHORT position - this should not happen with long-only options!", "WARNING")
+            else:
+                self.log_message("❌ ERROR: Position quantity is zero, nothing to close", "ERROR")
+                return
             
             # Ensure contract has all required fields for order placement
             exit_contract = pos['contract']
             if not exit_contract.exchange:
                 exit_contract.exchange = "SMART"
-            if not exit_contract.tradingClass and exit_contract.symbol == "SPX":
-                exit_contract.tradingClass = "SPXW"
+            if not exit_contract.tradingClass:
+                exit_contract.tradingClass = TRADING_CLASS
             if not exit_contract.currency:
                 exit_contract.currency = "USD"
             
@@ -4830,11 +5926,30 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             # OPTIMIZATION 5: Efficient styling - set all at once
             strike = contract_key.split('_')[1]
-            ax.set_title(f"{chart_type} Chart - Strike {strike}", 
-                        color='#E0E0E0', fontsize=10, pad=5)
+            # Update toolbar label instead of chart title
+            if chart_type == "Call":
+                self.call_contract_label.config(text=f"Strike {strike}")
+            elif chart_type == "Put":
+                self.put_contract_label.config(text=f"Strike {strike}")
+            
             ax.set_xlabel('Time', color='#E0E0E0', fontsize=8)
-            ax.set_ylabel('Price', color='#E0E0E0', fontsize=8)
             ax.grid(True, alpha=0.2, color='#444444', linewidth=0.5, linestyle='-')
+            
+            # Move Y-axis to the right
+            ax.yaxis.tick_right()
+            ax.yaxis.set_label_position("right")
+            ax.set_ylabel('Price', color='#E0E0E0', fontsize=8)
+            
+            # Add current price label on Y-axis (bold and highlighted)
+            current_price = float(closes[-1])  # Last close price
+            ax.text(n_bars + 0.5, current_price, f' ${current_price:.2f} ', 
+                   fontsize=9, fontweight='bold', color='#FF8C00',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='#000000', 
+                            edgecolor='#FF8C00', linewidth=1.5),
+                   verticalalignment='center', horizontalalignment='left')
+            
+            # Add horizontal line at current price
+            ax.axhline(y=current_price, color='#FF8C00', linestyle='--', linewidth=1, alpha=0.3)
             
             # Legend with minimal overhead
             ax.legend(facecolor='#181818', edgecolor='#FF8C00', 
