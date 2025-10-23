@@ -14,7 +14,7 @@ from tksheet import Sheet
 import threading
 import queue
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
 from collections import defaultdict
 from enum import Enum
 import json
@@ -3194,8 +3194,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             
             # Check hours (assuming local time is close to ET)
             current_time = now.time()
-            market_open = time(8, 30)
-            market_close = time(15, 15)
+            market_open = dt_time(8, 30)
+            market_close = dt_time(15, 15)
             
             return market_open <= current_time <= market_close
     
