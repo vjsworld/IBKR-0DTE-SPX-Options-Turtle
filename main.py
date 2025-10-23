@@ -902,8 +902,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.strategy_enabled = False  # Strategy automation OFF by default
         
         # Option chain parameters
-        self.strikes_above = 20  # Number of strikes above SPX price
-        self.strikes_below = 20  # Number of strikes below SPX price
+        self.strikes_above = 20  # Number of strikes above current price
+        self.strikes_below = 20  # Number of strikes below current price
         self.chain_refresh_interval = 3600  # Refresh chain every hour (in seconds)
         
         # Request ID management
@@ -1127,7 +1127,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Tab 2: Settings
         self.create_settings_tab()
         
-        # Tab 3: SPX Chart - NOW EMBEDDED IN TRADING TAB (chart moved to main trading tab)
+        # Tab 3: Chart - NOW EMBEDDED IN TRADING TAB (chart moved to main trading tab)
         # self.create_chart_tab()  # Disabled - chart now appears below option charts in Trading tab
         
         # Status bar at bottom (inside main_container so it's part of scrollable area)
@@ -1184,7 +1184,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Option Chain & Trading Dashboard")
         
-        # Option Chain header with SPX price and controls
+        # Option Chain header with price and controls
         chain_header = ttk.Frame(tab)
         chain_header.pack(fill=X, padx=5, pady=5)
         
@@ -2597,8 +2597,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                                      style="success.TButton", width=15)
         self.connect_btn.pack(side=LEFT, padx=5, pady=5)
         
-        # SPX Price (larger, center-ish)
-        self.spx_label = ttk.Label(status_frame, text="SPX: --",
+        # Underlying Price (larger, center-ish)
+        self.spx_label = ttk.Label(status_frame, text=f"{TRADING_SYMBOL}: --",
                                   font=("Arial", 12, "bold"),
                                   foreground="#00BFFF")
         self.spx_label.pack(side=LEFT, padx=20, pady=5)
@@ -2858,7 +2858,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.request_option_chain()
         
         # Request chart data with indicators
-        self.log_message("Requesting SPX chart data with indicators...", "INFO")
+        self.log_message(f"Requesting {TRADING_SYMBOL} chart data with indicators...", "INFO")
         self.request_chart_data()
         
         # If we're reconnecting, resubscribe to previously subscribed contracts
@@ -3335,7 +3335,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.spx_price_label.config(text=f"{UNDERLYING_SYMBOL}: {self.spx_price:.2f}")
             # Also update status bar if it exists
             if hasattr(self, 'spx_label'):
-                self.spx_label.config(text=f"SPX: {self.spx_price:.2f}")
+                self.spx_label.config(text=f"{TRADING_SYMBOL}: {self.spx_price:.2f}")
     
     # ========================================================================
     # OPTION CHAIN MANAGEMENT
@@ -3519,23 +3519,23 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     
     def manual_option_chain_fallback(self):
         """
-        Manually create option chain based on SPX price.
+        Manually create option chain based on underlying price.
         Primary method for building the option chain - creates strikes dynamically
-        around the current SPX price based on configured strike ranges.
+        around the current underlying price based on configured strike ranges.
         """
-        self.log_message("Building option chain from SPX price and strike settings...", "INFO")
+        self.log_message(f"Building option chain from {TRADING_SYMBOL} price and strike settings...", "INFO")
         
-        # Wait for SPX price if not available yet
+        # Wait for underlying price if not available yet
         if self.spx_price == 0:
-            self.log_message("Waiting for SPX price before creating manual chain...", "INFO")
+            self.log_message(f"Waiting for {TRADING_SYMBOL} price before creating manual chain...", "INFO")
             # Retry after 2 seconds
             if self.root:
                 self.root.after(2000, self.manual_option_chain_fallback)
             return
         
-        self.log_message(f"Creating option chain around SPX price: ${self.spx_price:.2f}", "INFO")
+        self.log_message(f"Creating option chain around {TRADING_SYMBOL} price: ${self.spx_price:.2f}", "INFO")
         
-        # Create strikes around current SPX price (every 5 points)
+        # Create strikes around current underlying price (every 5 points)
         center_strike = round(self.spx_price / 5) * 5  # Round to nearest 5
         strikes = []
         
@@ -3809,7 +3809,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 if self.spx_price <= 0:
                     return self.tws_colors['bg']  # Default black
                 
-                # ATM tolerance (within 0.5% of SPX price)
+                # ATM tolerance (within 0.5% of underlying price)
                 atm_tolerance = self.spx_price * 0.005
                 strike_distance = abs(strike - self.spx_price)
                 
@@ -4635,7 +4635,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if not trade or trade.get('status') != 'FILLED':
             return
         
-        # Get current SPX price
+        # Get current underlying price
         current_price = self.spx_price
         if current_price == 0:
             return  # Wait for valid price
