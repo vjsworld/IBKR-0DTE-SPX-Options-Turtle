@@ -1,8 +1,8 @@
 """
-SPX 0DTE Options Trading Application
+0DTE Options Trading Application
 Professional Bloomberg-style GUI for Interactive Brokers API
-Author: VJS World
-Date: October 15, 2025
+Author: Van Gothreaux, Triquant Analytics LLC
+Copywrite 2025.  All Rights Reserved.
 """
 
 import tkinter as tk
@@ -98,7 +98,7 @@ def setup_file_logger():
     log_filepath = os.path.join(logs_dir, log_filename)
     
     # Configure file logger
-    file_logger = logging.getLogger('SPXTradingApp')
+    file_logger = logging.getLogger('OptionTradingApp')
     file_logger.setLevel(logging.DEBUG)  # Capture everything
     
     # Remove existing handlers to avoid duplicates
@@ -120,7 +120,7 @@ def setup_file_logger():
     
     # Log startup
     file_logger.info("=" * 80)
-    file_logger.info("SPX 0DTE Options Trading Application - Session Started")
+    file_logger.info("0DTE Options Trading Application - Session Started")
     file_logger.info("=" * 80)
     
     return file_logger
@@ -140,7 +140,7 @@ def calculate_greeks(option_type: str, spot_price: float, strike: float,
     
     Args:
         option_type: 'C' for call, 'P' for put
-        spot_price: Current price of underlying (SPX)
+        spot_price: Current price of underlying
         strike: Strike price of option
         time_to_expiry: Time to expiration in years (e.g., 0.00274 for 1 day assuming 365 days/year)
         volatility: Implied volatility as decimal (e.g., 0.20 for 20%)
@@ -429,11 +429,11 @@ class IBKRWrapper(EWrapper):
     def tickPrice(self, reqId: TickerId, tickType: TickType, price: float,
                   attrib: TickAttrib):
         """Receives real-time price updates"""
-        # Check if this is SPX underlying price
-        if reqId == self.app.spx_req_id:
+        # Check if this is underlying price
+        if reqId == self.app.underlying_req_id:
             if tickType == 4:  # LAST price
-                self.app.spx_price = price
-                self.app.update_spx_price_display()
+                self.app.underlying_price = price
+                self.app.update_underlying_price_display()
             return
         
         # Check if this is VIX price
@@ -674,9 +674,9 @@ class IBKRWrapper(EWrapper):
     
     def historicalData(self, reqId: int, bar):
         """Receives historical bar data"""
-        # Handle SPX 1-min data for Z-Score strategy
-        if reqId == self.app.spx_1min_req_id:
-            self.app.spx_1min_bars.append({
+        # Handle Underlying 1-min data for Z-Score strategy
+        if reqId == self.app.underlying_1min_req_id:
+            self.app.underlying_1min_bars.append({
                 'time': bar.date,
                 'open': bar.open,
                 'high': bar.high,
@@ -724,10 +724,10 @@ class IBKRWrapper(EWrapper):
     
     def historicalDataEnd(self, reqId: int, start: str, end: str):
         """Called when historical data request is complete"""
-        # Handle SPX 1-min data completion
-        if reqId == self.app.spx_1min_req_id:
+        # Handle underlying 1-min data completion
+        if reqId == self.app.underlying_1min_req_id:
             self.app.log_message(
-                f"SPX 1-min history received ({len(self.app.spx_1min_bars)} bars) for Z-Score",
+                f"Underlying 1-min history received ({len(self.app.underlying_1min_bars)} bars) for Z-Score",
                 "SUCCESS"
             )
             self.app.calculate_indicators()
@@ -789,10 +789,10 @@ class IBKRWrapper(EWrapper):
     
     def historicalDataUpdate(self, reqId: int, bar):
         """Called when streaming historical data updates (real-time bars)"""
-        if reqId == self.app.spx_1min_req_id:
+        if reqId == self.app.underlying_1min_req_id:
             # Parse the date string to datetime
             bar_time = datetime.strptime(bar.date, '%Y%m%d  %H:%M:%S')
-            self.app.spx_1min_bars.append({
+            self.app.underlying_1min_bars.append({
                 'time': bar_time,
                 'open': bar.open,
                 'high': bar.high,
@@ -933,8 +933,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.manual_order_max_price_deviation = 0.25  # Max $0.25 deviation before re-pricing
         
         # SPX underlying price tracking
-        self.spx_price = 0.0
-        self.spx_req_id = None
+        self.underlying_price = 0.0
+        self.underlying_req_id = None
         
         # Expiration management
         self.expiry_offset = 0  # 0 = today (0DTE), 1 = next expiry, etc.
@@ -943,7 +943,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Expiration will be logged when GUI is ready
         
         # Option chain
-        self.spx_contracts = []  # List of all option contracts
+        self.option_contracts = []  # List of all option contracts
         
         # Trading state
         self.last_trade_hour = -1
@@ -974,8 +974,8 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.trade_qty = 1  # Number of contracts per trade
         
         # Strategy Data
-        self.spx_1min_bars = deque(maxlen=390)  # Store SPX 1-min bars (full trading day)
-        self.spx_1min_req_id = 999997  # Request ID for SPX 1-min historical data
+        self.underlying_1min_bars = deque(maxlen=390)  # Store underlying 1-min bars (full trading day)
+        self.underlying_1min_req_id = 999997  # Request ID for underlying 1-min historical data
         self.indicators = {'z_score': 0.0, 'ema9': 0.0}  # Current indicator values
         self.active_trade_info = {}  # Current active trade details
         self.trade_history = []  # Completed trades
@@ -1192,10 +1192,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                  font=("Arial", 14, "bold")).pack(side=LEFT, padx=5)
         
         # Price display (large and prominent)
-        self.spx_price_label = ttk.Label(chain_header, text=f"{TRADING_SYMBOL}: Loading...", 
+        self.underlying_price_label = ttk.Label(chain_header, text=f"{TRADING_SYMBOL}: Loading...", 
                                          font=("Arial", 14, "bold"),
                                          foreground="#FF8C00")
-        self.spx_price_label.pack(side=LEFT, padx=20)
+        self.underlying_price_label.pack(side=LEFT, padx=20)
         
         # Expiration selector       
         self.expiry_offset_var = tk.StringVar(value="0 DTE (Today)")
@@ -1581,13 +1581,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Confirmation Chart (Left - 1 min) | Trade Chart (Right - 15 secs)
         # ========================================================================
         
-        spx_charts_container = ttk.Frame(bottom_frame)
-        spx_charts_container.pack(fill=BOTH, expand=False, padx=5, pady=(5, 5))
+        dual_charts_container = ttk.Frame(bottom_frame)
+        dual_charts_container.pack(fill=BOTH, expand=False, padx=5, pady=(5, 5))
         
         # ====================
         # CONFIRMATION CHART (Left - Longer timeframe)
         # ====================
-        confirm_chart_container = ttk.Frame(spx_charts_container)
+        confirm_chart_container = ttk.Frame(dual_charts_container)
         confirm_chart_container.pack(side=LEFT, fill=BOTH, expand=YES, padx=(0, 2))
         
         confirm_chart_frame = ttk.Frame(confirm_chart_container, height=300)
@@ -1660,7 +1660,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # ====================
         # TRADE CHART (Right - Shorter timeframe for trading)
         # ====================
-        trade_chart_container = ttk.Frame(spx_charts_container)
+        trade_chart_container = ttk.Frame(dual_charts_container)
         trade_chart_container.pack(side=RIGHT, fill=BOTH, expand=YES, padx=(2, 0))
         
         trade_chart_frame = ttk.Frame(trade_chart_container, height=300)
@@ -2280,11 +2280,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.log_message(f"Error canceling Confirmation chart: {str(e)}", "WARNING")
         
         # Create contract for underlying index
-        spx_contract = Contract()
-        spx_contract.symbol = UNDERLYING_SYMBOL
-        spx_contract.secType = "IND"
-        spx_contract.currency = "USD"
-        spx_contract.exchange = "CBOE"
+        underlying_contract = Contract()
+        underlying_contract.symbol = UNDERLYING_SYMBOL
+        underlying_contract.secType = "IND"
+        underlying_contract.currency = "USD"
+        underlying_contract.exchange = "CBOE"
         
         # Clear existing data
         self.confirm_bar_data.clear()
@@ -2297,7 +2297,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         try:
             self.reqHistoricalData(
                 999995,  # Unique ID for confirmation chart
-                spx_contract,
+                underlying_contract,
                 "",
                 period,
                 timeframe,
@@ -2333,11 +2333,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 self.log_message(f"Error canceling Trade chart: {str(e)}", "WARNING")
         
         # Create contract for underlying index
-        spx_contract = Contract()
-        spx_contract.symbol = UNDERLYING_SYMBOL
-        spx_contract.secType = "IND"
-        spx_contract.currency = "USD"
-        spx_contract.exchange = "CBOE"
+        underlying_contract = Contract()
+        underlying_contract.symbol = UNDERLYING_SYMBOL
+        underlying_contract.secType = "IND"
+        underlying_contract.currency = "USD"
+        underlying_contract.exchange = "CBOE"
         
         # Clear existing data
         self.trade_bar_data.clear()
@@ -2350,7 +2350,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         try:
             self.reqHistoricalData(
                 999994,  # Unique ID for trade chart
-                spx_contract,
+                underlying_contract,
                 "",
                 period,
                 timeframe,
@@ -2598,10 +2598,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.connect_btn.pack(side=LEFT, padx=5, pady=5)
         
         # Underlying Price (larger, center-ish)
-        self.spx_label = ttk.Label(status_frame, text=f"{TRADING_SYMBOL}: --",
+        self.underlying_label = ttk.Label(status_frame, text=f"{TRADING_SYMBOL}: --",
                                   font=("Arial", 12, "bold"),
                                   foreground="#00BFFF")
-        self.spx_label.pack(side=LEFT, padx=20, pady=5)
+        self.underlying_label.pack(side=LEFT, padx=20, pady=5)
         
         # VIX Price
         self.vix_label = ttk.Label(status_frame, text="VIX: --",
@@ -2851,7 +2851,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         
         # Subscribe to SPX underlying price
         self.log_message("Subscribing to SPX underlying price...", "INFO")
-        self.subscribe_spx_price()
+        self.subscribe_underlying_price()
         
         # Request option chain - this will automatically subscribe to market data
         self.log_message(f"Requesting {TRADING_SYMBOL} option chain for 0DTE...", "INFO")
@@ -3259,7 +3259,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # SPX UNDERLYING PRICE
     # ========================================================================
     
-    def subscribe_spx_price(self):
+    def subscribe_underlying_price(self):
         """
         Subscribe to SPX underlying index price.
         This provides real-time price updates for the SPX index.
@@ -3269,24 +3269,24 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return
         
         # Create underlying index contract
-        spx_contract = Contract()
-        spx_contract.symbol = UNDERLYING_SYMBOL
-        spx_contract.secType = "IND"
-        spx_contract.currency = "USD"
-        spx_contract.exchange = "CBOE"
+        underlying_contract = Contract()
+        underlying_contract.symbol = UNDERLYING_SYMBOL
+        underlying_contract.secType = "IND"
+        underlying_contract.currency = "USD"
+        underlying_contract.exchange = "CBOE"
         
         # Get unique request ID
-        self.spx_req_id = self.next_req_id
+        self.underlying_req_id = self.next_req_id
         self.next_req_id += 1
         
         # Request market data for underlying
-        self.reqMktData(self.spx_req_id, spx_contract, "", False, False, [])
-        self.log_message(f"Subscribed to {UNDERLYING_SYMBOL} underlying price (reqId: {self.spx_req_id})", "INFO")
+        self.reqMktData(self.underlying_req_id, underlying_contract, "", False, False, [])
+        self.log_message(f"Subscribed to {UNDERLYING_SYMBOL} underlying price (reqId: {self.underlying_req_id})", "INFO")
         
         # Subscribe to VIX for strategy filter
         self.subscribe_vix_price()
         
-        # Request SPX 1-min historical data for Z-Score strategy
+        # Request underlying 1-min historical data for Z-Score strategy
         self.request_spx_1min_history()
     
     def subscribe_vix_price(self):
@@ -3308,16 +3308,16 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         if self.connection_state != ConnectionState.CONNECTED:
             return
         
-        spx_contract = Contract()
-        spx_contract.symbol = UNDERLYING_SYMBOL
-        spx_contract.secType = "IND"
-        spx_contract.currency = "USD"
-        spx_contract.exchange = "CBOE"
+        underlying_contract = Contract()
+        underlying_contract.symbol = UNDERLYING_SYMBOL
+        underlying_contract.secType = "IND"
+        underlying_contract.currency = "USD"
+        underlying_contract.exchange = "CBOE"
         
         # Request 1 day of 1-minute bars (390 bars in a trading day)
         self.reqHistoricalData(
-            self.spx_1min_req_id,
-            spx_contract,
+            self.underlying_1min_req_id,
+            underlying_contract,
             "",  # End date/time (empty = now)
             "1 D",  # Duration
             "1 min",  # Bar size
@@ -3327,15 +3327,15 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             True,  # Keep up to date (streaming)
             []  # Chart options
         )
-        self.log_message(f"Requested {UNDERLYING_SYMBOL} 1-min history for Z-Score (reqId: {self.spx_1min_req_id})", "INFO")
+        self.log_message(f"Requested {UNDERLYING_SYMBOL} 1-min history for Z-Score (reqId: {self.underlying_1min_req_id})", "INFO")
     
-    def update_spx_price_display(self):
+    def update_underlying_price_display(self):
         """Update the underlying price display in the GUI"""
-        if self.spx_price > 0:
-            self.spx_price_label.config(text=f"{UNDERLYING_SYMBOL}: {self.spx_price:.2f}")
+        if self.underlying_price > 0:
+            self.underlying_price_label.config(text=f"{UNDERLYING_SYMBOL}: {self.underlying_price:.2f}")
             # Also update status bar if it exists
-            if hasattr(self, 'spx_label'):
-                self.spx_label.config(text=f"{TRADING_SYMBOL}: {self.spx_price:.2f}")
+            if hasattr(self, 'underlying_label'):
+                self.underlying_label.config(text=f"{TRADING_SYMBOL}: {self.underlying_price:.2f}")
     
     # ========================================================================
     # OPTION CHAIN MANAGEMENT
@@ -3526,17 +3526,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.log_message(f"Building option chain from {TRADING_SYMBOL} price and strike settings...", "INFO")
         
         # Wait for underlying price if not available yet
-        if self.spx_price == 0:
+        if self.underlying_price == 0:
             self.log_message(f"Waiting for {TRADING_SYMBOL} price before creating manual chain...", "INFO")
             # Retry after 2 seconds
             if self.root:
                 self.root.after(2000, self.manual_option_chain_fallback)
             return
         
-        self.log_message(f"Creating option chain around {TRADING_SYMBOL} price: ${self.spx_price:.2f}", "INFO")
+        self.log_message(f"Creating option chain around {TRADING_SYMBOL} price: ${self.underlying_price:.2f}", "INFO")
         
         # Create strikes around current underlying price (every 5 points)
-        center_strike = round(self.spx_price / 5) * 5  # Round to nearest 5
+        center_strike = round(self.underlying_price / 5) * 5  # Round to nearest 5
         strikes = []
         
         # Generate strikes: strikes_below below ATM, then ATM, then strikes_above above ATM
@@ -3556,17 +3556,17 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         )
         
         # Create contracts for all strikes
-        self.spx_contracts = []
+        self.option_contracts = []
         
         for strike in strikes:
             call_contract = self.create_option_contract(strike, "C")
             put_contract = self.create_option_contract(strike, "P")
             
-            self.spx_contracts.append(('C', strike, call_contract))
-            self.spx_contracts.append(('P', strike, put_contract))
+            self.option_contracts.append(('C', strike, call_contract))
+            self.option_contracts.append(('P', strike, put_contract))
         
         self.log_message(
-            f"Created {len(self.spx_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)", 
+            f"Created {len(self.option_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)", 
             "SUCCESS"
         )
         
@@ -3599,18 +3599,18 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 )
                 
                 # Create contracts for all strikes (calls and puts)
-                self.spx_contracts = []
+                self.option_contracts = []
                 
                 for strike in strikes:
                     # Create call and put contracts for each strike
                     call_contract = self.create_option_contract(strike, "C")
                     put_contract = self.create_option_contract(strike, "P")
                     
-                    self.spx_contracts.append(('C', strike, call_contract))
-                    self.spx_contracts.append(('P', strike, put_contract))
+                    self.option_contracts.append(('C', strike, call_contract))
+                    self.option_contracts.append(('P', strike, put_contract))
                 
                 self.log_message(
-                    f"Created {len(self.spx_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)",
+                    f"Created {len(self.option_contracts)} option contracts ({len(strikes)} calls + {len(strikes)} puts)",
                     "SUCCESS"
                 )
                 
@@ -3629,7 +3629,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return
             
         self.log_message(
-            f"Subscribing to real-time market data for {len(self.spx_contracts)} contracts...", 
+            f"Subscribing to real-time market data for {len(self.option_contracts)} contracts...", 
             "INFO"
         )
         
@@ -3646,7 +3646,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Organize contracts by strike (calls and puts together)
         strikes_dict = {}
         
-        for right, strike, contract in self.spx_contracts:
+        for right, strike, contract in self.option_contracts:
             if strike not in strikes_dict:
                 strikes_dict[strike] = {'call': None, 'put': None, 'call_contract': None, 'put_contract': None}
             
@@ -3758,7 +3758,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         )
         
         # Use the existing subscribe_market_data method with stored contracts
-        self.spx_contracts = self.subscribed_contracts
+        self.option_contracts = self.subscribed_contracts
         self.subscribe_market_data()
     
     def update_option_chain_display(self):
@@ -3806,24 +3806,24 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             # Helper function to get ITM/OTM background color
             def get_row_bg_color(strike):
                 """Determine background color based on ITM/OTM status"""
-                if self.spx_price <= 0:
+                if self.underlying_price <= 0:
                     return self.tws_colors['bg']  # Default black
                 
                 # ATM tolerance (within 0.5% of underlying price)
-                atm_tolerance = self.spx_price * 0.005
-                strike_distance = abs(strike - self.spx_price)
+                atm_tolerance = self.underlying_price * 0.005
+                strike_distance = abs(strike - self.underlying_price)
                 
                 if strike_distance <= atm_tolerance:
                     return self.tws_colors['strike_bg']  # ATM: slightly lighter
-                elif strike < self.spx_price:
+                elif strike < self.underlying_price:
                     # Calls ITM when strike < spot
-                    if (self.spx_price - strike) > (self.spx_price * 0.02):
+                    if (self.underlying_price - strike) > (self.underlying_price * 0.02):
                         return self.tws_colors['call_itm_deep']  # Deep ITM
                     else:
                         return self.tws_colors['call_itm']  # ITM
                 else:
                     # Puts ITM when strike > spot
-                    if (strike - self.spx_price) > (self.spx_price * 0.02):
+                    if (strike - self.underlying_price) > (self.underlying_price * 0.02):
                         return self.tws_colors['put_itm_deep']  # Deep ITM
                     else:
                         return self.tws_colors['put_itm']  # ITM
@@ -3882,7 +3882,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 if call_data and (not call_data.get('delta') or call_data.get('delta') == 0):
                     call_bid = call_data.get('bid', 0)
                     call_ask = call_data.get('ask', 0)
-                    if call_bid > 0 and call_ask > 0 and self.spx_price > 0:
+                    if call_bid > 0 and call_ask > 0 and self.underlying_price > 0:
                         call_mid = (call_bid + call_ask) / 2.0
                         # Estimate IV from option price (simplified - use 20% if no better estimate)
                         estimated_iv = call_data.get('iv', 0.20)
@@ -3890,7 +3890,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                             estimated_iv = 0.20
                         
                         # Calculate greeks
-                        greeks = calculate_greeks('C', self.spx_price, strike, time_to_expiry, estimated_iv)
+                        greeks = calculate_greeks('C', self.underlying_price, strike, time_to_expiry, estimated_iv)
                         call_data['delta'] = greeks['delta']
                         call_data['gamma'] = greeks['gamma']
                         call_data['theta'] = greeks['theta']
@@ -3902,7 +3902,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 if put_data and (not put_data.get('delta') or put_data.get('delta') == 0):
                     put_bid = put_data.get('bid', 0)
                     put_ask = put_data.get('ask', 0)
-                    if put_bid > 0 and put_ask > 0 and self.spx_price > 0:
+                    if put_bid > 0 and put_ask > 0 and self.underlying_price > 0:
                         put_mid = (put_bid + put_ask) / 2.0
                         # Estimate IV from option price (simplified - use 20% if no better estimate)
                         estimated_iv = put_data.get('iv', 0.20)
@@ -3910,7 +3910,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                             estimated_iv = 0.20
                         
                         # Calculate greeks
-                        greeks = calculate_greeks('P', self.spx_price, strike, time_to_expiry, estimated_iv)
+                        greeks = calculate_greeks('P', self.underlying_price, strike, time_to_expiry, estimated_iv)
                         put_data['delta'] = greeks['delta']
                         put_data['gamma'] = greeks['gamma']
                         put_data['theta'] = greeks['theta']
@@ -3976,7 +3976,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
                 # Strike column: Dynamic coloring based on ATM position
                 # Strikes above SPX = current blue (#2a4a6a)
                 # Strikes below SPX = darker blue (#1a2a3a)
-                if strike >= self.spx_price:
+                if strike >= self.underlying_price:
                     strike_bg = self.tws_colors['strike_bg']  # Above ATM: current blue
                 else:
                     strike_bg = '#1a2a3a'  # Below ATM: darker blue
@@ -4418,12 +4418,12 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # ========================================================================
     
     def calculate_indicators(self):
-        """Calculate Z-Score and 9-EMA from SPX 1-min bars"""
-        if len(self.spx_1min_bars) < self.z_score_period:
+        """Calculate Z-Score and 9-EMA from underlying 1-min bars"""
+        if len(self.underlying_1min_bars) < self.z_score_period:
             return
         
         # Convert to DataFrame for easier calculation
-        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.spx_1min_bars]
+        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.underlying_1min_bars]
         df = pd.DataFrame(bar_data).set_index('time')
         
         # 1. Calculate 9-EMA (for Profit Target)
@@ -4472,7 +4472,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return
         
         # Need enough data for Z-Score calculation
-        if len(self.spx_1min_bars) < self.z_score_period + 1:
+        if len(self.underlying_1min_bars) < self.z_score_period + 1:
             if hasattr(self, 'strategy_status_var'):
                 self.strategy_status_var.set("Status: Waiting for Data...")
             return
@@ -4487,7 +4487,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             self.strategy_status_var.set("Status: SCANNING...")
         
         # Get last two Z-Scores for crossover logic
-        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.spx_1min_bars]
+        bar_data = [{'time': b['time'], 'close': b['close']} for b in self.underlying_1min_bars]
         df = pd.DataFrame(bar_data).set_index('time')
         sma = df['close'].rolling(window=self.z_score_period).mean()
         std = df['close'].rolling(window=self.z_score_period).std()
@@ -4636,7 +4636,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return
         
         # Get current underlying price
-        current_price = self.spx_price
+        current_price = self.underlying_price
         if current_price == 0:
             return  # Wait for valid price
         
@@ -4722,13 +4722,13 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     # Based on IBKR best practices for retail options trading
     # ========================================================================
     
-    def round_to_spx_increment(self, price: float) -> float:
+    def round_to_tick_increment(self, price: float) -> float:
         """
-        Round price to SPX options tick size:
+        Round price to index options tick size:
         - Prices >= $3.00: Round to nearest $0.10
         - Prices < $3.00: Round to nearest $0.05
         
-        Per CBOE SPX options rules and IBKR requirements
+        Per CBOE index options rules (SPX/XSP) and IBKR requirements
         """
         if price >= 3.00:
             # Round to nearest $0.10
@@ -4753,7 +4753,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             return 0.0
         
         mid = (bid + ask) / 2.0
-        return self.round_to_spx_increment(mid)
+        return self.round_to_tick_increment(mid)
     
     def find_option_by_max_risk(self, option_type: str, max_risk_dollars: float) -> Optional[Tuple[str, Contract, float]]:
         """
