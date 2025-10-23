@@ -349,6 +349,11 @@ class IBKRWrapper(EWrapper):
         
         # Historical data errors
         elif errorCode == 162:  # Historical market data Service error
+            # Check if this is a chart cancellation (expected when refreshing charts)
+            if reqId in [999994, 999995] and "cancelled" in errorString.lower():
+                # This is expected when we cancel a chart subscription - ignore it
+                return
+            
             self.app.log_message(f"Historical data permission issue for reqId {reqId}: {errorString}", "WARNING")
             # Check if this is a historical data request
             if reqId in self.app.historical_data_requests:
