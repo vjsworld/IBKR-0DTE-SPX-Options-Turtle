@@ -1004,7 +1004,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
     def setup_gui(self):
         """Initialize the GUI"""
         self.root = ttk.Window(themename="darkly")
-        self.root.title("SPX 0DTE Options Trader - Professional Edition")
+        self.root.title(f"{TRADING_SYMBOL} 0DTE Options Trader - Professional Edition")
         self.root.geometry("1600x900")
         
         # Apply custom color scheme
@@ -1188,11 +1188,11 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         chain_header = ttk.Frame(tab)
         chain_header.pack(fill=X, padx=5, pady=5)
         
-        ttk.Label(chain_header, text="SPX Option Chain", 
+        ttk.Label(chain_header, text=f"{TRADING_SYMBOL} Option Chain", 
                  font=("Arial", 14, "bold")).pack(side=LEFT, padx=5)
         
-        # SPX Price display (large and prominent)
-        self.spx_price_label = ttk.Label(chain_header, text="SPX: Loading...", 
+        # Price display (large and prominent)
+        self.spx_price_label = ttk.Label(chain_header, text=f"{TRADING_SYMBOL}: Loading...", 
                                          font=("Arial", 14, "bold"),
                                          foreground="#FF8C00")
         self.spx_price_label.pack(side=LEFT, padx=20)
@@ -1734,7 +1734,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.trade_bar_data = []
         self.chart_trade_markers = []
         
-        self.log_message("SPX dual-chart system created - Confirmation + Trade charts", "INFO")
+        self.log_message(f"{TRADING_SYMBOL} dual-chart system created - Confirmation + Trade charts", "INFO")
         
         # ========================================================================
         # BOTTOM PANELS - 5-Column Horizontal Layout
@@ -2209,9 +2209,9 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         scrollbar.pack(side=RIGHT, fill=Y)
     
     def create_chart_tab(self):
-        """Create SPX chart tab with candlesticks, 9-EMA, and trade markers"""
+        """Create chart tab with candlesticks, 9-EMA, and trade markers"""
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="SPX Chart")
+        self.notebook.add(tab, text=f"{TRADING_SYMBOL} Chart")
         
         # Chart controls at top
         controls_frame = ttk.Frame(tab)
@@ -2388,7 +2388,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             z_period = int(self.confirm_z_period_entry.get() or "30")
             z_threshold = float(self.confirm_z_threshold_entry.get() or "1.5")
             chart_name = "Confirmation"
-            chart_title = f"SPX Confirmation Chart ({ema_length}-EMA, Z-Period={z_period})"
+            chart_title = f"{TRADING_SYMBOL} Confirmation Chart ({ema_length}-EMA, Z-Period={z_period})"
         else:  # trade
             bar_data = self.trade_bar_data
             price_ax = self.trade_ax
@@ -2398,7 +2398,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
             z_period = int(self.trade_z_period_entry.get() or "30")
             z_threshold = float(self.trade_z_threshold_entry.get() or "1.5")
             chart_name = "Trade"
-            chart_title = f"SPX Trade Chart ({ema_length}-EMA, Z-Period={z_period})"
+            chart_title = f"{TRADING_SYMBOL} Trade Chart ({ema_length}-EMA, Z-Period={z_period})"
         
         if not bar_data:
             self.log_message(f"No {chart_name} chart data to display", "WARNING")
@@ -2502,7 +2502,7 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         # Move Y-axis to the right
         price_ax.yaxis.tick_right()
         price_ax.yaxis.set_label_position("right")
-        price_ax.set_ylabel('SPX Price', color='#808080', fontsize=9)
+        price_ax.set_ylabel(f'{TRADING_SYMBOL} Price', color='#808080', fontsize=9)
         price_ax.set_title(chart_title, color='#C0C0C0', fontsize=11, fontweight='bold', pad=5)
         
         # Add current price label on Y-axis (bold and highlighted)
@@ -2854,10 +2854,10 @@ class SPXTradingApp(IBKRWrapper, IBKRClient):
         self.subscribe_spx_price()
         
         # Request option chain - this will automatically subscribe to market data
-        self.log_message("Requesting SPX option chain for 0DTE...", "INFO")
+        self.log_message(f"Requesting {TRADING_SYMBOL} option chain for 0DTE...", "INFO")
         self.request_option_chain()
         
-        # Request SPX chart data with indicators
+        # Request chart data with indicators
         self.log_message("Requesting SPX chart data with indicators...", "INFO")
         self.request_chart_data()
         
