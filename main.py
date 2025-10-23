@@ -268,6 +268,11 @@ class IBKRWrapper(EWrapper):
                 self.app.log_message("ℹ Note: TWS reports 'eTradeOnly' attribute warnings - this is normal and can be ignored", "INFO")
             return
         
+        # Chart cancellation (error 162) - suppress before any logging
+        if errorCode == 162 and reqId in [999994, 999995] and "cancelled" in errorString.lower():
+            # This is expected when we cancel a chart subscription - ignore it completely
+            return
+        
         # CRITICAL: Log ALL errors for debugging order placement issues
         # For order-related errors (reqId >= order_id range), always log
         if reqId >= 1000 or errorCode not in [2104, 2106, 2158]:
@@ -349,11 +354,6 @@ class IBKRWrapper(EWrapper):
         
         # Historical data errors
         elif errorCode == 162:  # Historical market data Service error
-            # Check if this is a chart cancellation (expected when refreshing charts)
-            if reqId in [999994, 999995] and "cancelled" in errorString.lower():
-                # This is expected when we cancel a chart subscription - ignore it
-                return
-            
             self.app.log_message(f"Historical data permission issue for reqId {reqId}: {errorString}", "WARNING")
             # Check if this is a historical data request
             if reqId in self.app.historical_data_requests:

@@ -1,6 +1,7 @@
 # Chart Refresh Error 162 Fix
 
 ## Date: October 22, 2025
+## Updated: October 22, 2025 (Fixed logging order)
 
 ## Issue: False Error Messages on Chart Refresh
 
@@ -22,19 +23,35 @@ When refreshing a chart:
 
 This is NOT an actual error - it's IBKR acknowledging our intentional cancellation.
 
-### Fix Applied
-Updated the error handler (line 351-355) to suppress error 162 when it's a chart cancellation:
+### Fix Applied (v2 - Final)
+**CRITICAL**: The check must happen BEFORE any error logging!
+
+Updated the error handler (line 267-270) to check and suppress chart cancellation BEFORE logging:
 
 ```python
-# Historical data errors
-elif errorCode == 162:  # Historical market data Service error
-    # Check if this is a chart cancellation (expected when refreshing charts)
-    if reqId in [999994, 999995] and "cancelled" in errorString.lower():
-        # This is expected when we cancel a chart subscription - ignore it
-        return
-    
-    # ... rest of error 162 handling for actual errors
+# Handle benign error codes first (before logging)
+if errorCode == 10268:  # EtradeOnly attribute error
+    # ... handle ...
+    return
+
+# Chart cancellation (error 162) - suppress before any logging
+if errorCode == 162 and reqId in [999994, 999995] and "cancelled" in errorString.lower():
+    # This is expected when we cancel a chart subscription - ignore it completely
+    return
+
+# CRITICAL: Log ALL errors for debugging order placement issues
+# (Now this logging happens AFTER we've filtered out chart cancellations)
+if reqId >= 1000 or errorCode not in [2104, 2106, 2158]:
+    # ... log errors ...
 ```
+
+### What Was Wrong in v1
+The first fix checked for chart cancellations, but AFTER the error was already logged on line 279. This meant users still saw the red ERROR messages even though we were suppressing the error later.
+
+### Fix v2 Changes
+1. Moved chart cancellation check to line 267 (BEFORE any logging)
+2. Removed duplicate check from line 356 (no longer needed)
+3. Now errors are filtered BEFORE hitting the log, not after
 
 ### Logic
 - Check if the reqId is 999994 (Trade Chart) or 999995 (Confirmation Chart)
@@ -62,7 +79,8 @@ elif errorCode == 162:  # Historical market data Service error
 5. **After**: Clean refresh with only success messages
 
 ### Files Modified
-- **main.py** (line 351-355): Added suppression for chart cancellation errors
+- **main.py** (line 267-270): Added early return for chart cancellation errors BEFORE logging
+- **main.py** (line 356): Removed duplicate check (now handled earlier)
 
 ---
 
